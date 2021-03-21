@@ -43,6 +43,7 @@ import org.apache.spark.util.Utils
 private class MutableInt(var i: Int)
 
 case class Origin(
+  // 每一个 TreeNode 都会有这样的一个类，用来标示 行号 和 符号的起始位置
   line: Option[Int] = None,
   startPosition: Option[Int] = None)
 
@@ -51,6 +52,7 @@ case class Origin(
  * line of code is currently being parsed.
  */
 object CurrentOrigin {
+  // 通过这个 object ，来操作每一个 TreeNode 的 Origin
   private val value = new ThreadLocal[Origin]() {
     override def initialValue: Origin = Origin()
   }
@@ -75,17 +77,27 @@ object CurrentOrigin {
 
 // scalastyle:off
 abstract class TreeNode[BaseType <: TreeNode[BaseType]] extends Product {
+  // TreeNode 是 3个类型的基类，都是用来表示树形结构的某一个节点
+  // 1 Expression，子类比较多
+  // 2 QueryPlan，其中 QueryPlan 有两个子类
+    // 2.1 LogicPlan
+    // 2.2 SparkPlan
+  // 3 UnresolvedException
+  
+  // TreeNode 中的方法主要是一些树的访问操作
 // scalastyle:on
   self: BaseType =>
 
+  // 用来标示这个 TreeNode 的位置的，万一有报错，可以通过这个信息来获取位置
   val origin: Origin = CurrentOrigin.get
-
   /**
    * Returns a Seq of the children of this node.
    * Children should not change. Immutability required for containsChild optimization
    */
+  // 该 TreeNode 的孩子
   def children: Seq[BaseType]
 
+  // 孩子从 Seq -> Set
   lazy val containsChild: Set[TreeNode[_]] = children.toSet
 
   private lazy val _hashCode: Int = scala.util.hashing.MurmurHash3.productHash(this)
