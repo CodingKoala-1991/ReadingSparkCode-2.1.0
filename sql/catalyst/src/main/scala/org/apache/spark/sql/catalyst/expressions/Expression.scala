@@ -51,6 +51,7 @@ import org.apache.spark.util.Utils
  *
  */
 abstract class Expression extends TreeNode[Expression] {
+  //
 
   /**
    * Returns true when an expression is a candidate for static evaluation before the query is
@@ -63,6 +64,9 @@ abstract class Expression extends TreeNode[Expression] {
    *  - A [[Literal]] is foldable
    *  - A [[Cast]] or [[UnaryMinus]] is foldable if its child is foldable
    */
+  // 是否可以折叠，也就是说能否直接计算，如果是 true 就可以直接计算，两种情况可以直接计算
+  // 1 表达式是  Literal 这种 Expression
+  // 2 所有子表达式的 foldable 都是 true
   def foldable: Boolean = false
 
   /**
@@ -77,13 +81,18 @@ abstract class Expression extends TreeNode[Expression] {
    * An example would be `SparkPartitionID` that relies on the partition id returned by TaskContext.
    * By default leaf expressions are deterministic as Nil.forall(_.deterministic) returns true.
    */
+  // 执行 eval方法 返回的结果，是否是确定性的，由这个 Expression 的所有孩子的 确定性deterministic 来决定
   def deterministic: Boolean = children.forall(_.deterministic)
 
+  // 是否有可能输出空值
   def nullable: Boolean
 
+  // 该 Expression 包括的所有的 的属性 Attribute，做成了一个 Set
+  // 每个孩子都通过 references 方法嵌套下去，也就是说会获得所有直接孩子和间接孩子的 属性（Attribute）
   def references: AttributeSet = AttributeSet(children.flatMap(_.references.iterator))
 
   /** Returns the result of evaluating this expression on a given input Row */
+  // 执行这个 Expression
   def eval(input: InternalRow = null): Any
 
   /**
@@ -129,18 +138,21 @@ abstract class Expression extends TreeNode[Expression] {
    * Implementations of expressions should override this if the resolution of this type of
    * expression involves more than just the resolution of its children and type checking.
    */
+  // 孩子都和 特定 schema 联系起来并且输入的数据类型被check通过
   lazy val resolved: Boolean = childrenResolved && checkInputDataTypes().isSuccess
 
   /**
    * Returns the [[DataType]] of the result of evaluating this expression.  It is
    * invalid to query the dataType of an unresolved expression (i.e., when `resolved` == false).
    */
+  // 该 Expression 执行 eval 方法返回的 DataType
   def dataType: DataType
 
   /**
    * Returns true if  all the children of this expression have been resolved to a specific schema
    * and false if any still contains any unresolved placeholders.
    */
+  // 检查所有孩子是不是都是  resolved 了
   def childrenResolved: Boolean = children.forall(_.resolved)
 
   /**
@@ -151,6 +163,7 @@ abstract class Expression extends TreeNode[Expression] {
    * `deterministic` expressions where `this.canonicalized == other.canonicalized` will always
    * evaluate to the same result.
    */
+  // 规范化后的 Expression，在保证逻辑正确的前提下进行重写
   lazy val canonicalized: Expression = {
     val canonicalizedChildren = children.map(_.canonicalized)
     Canonicalize.execute(withNewChildren(canonicalizedChildren))
@@ -162,6 +175,10 @@ abstract class Expression extends TreeNode[Expression] {
    *
    * See [[Canonicalize]] for more details.
    */
+  // 判断两个 Expression 是否等价
+  // 首先两个 Expression 都要确定性
+  // 两个 Expression 经过规范化之后仍然相等
+  // 就是等价
   def semanticEquals(other: Expression): Boolean =
     deterministic && other.deterministic && canonicalized == other.canonicalized
 
@@ -178,6 +195,7 @@ abstract class Expression extends TreeNode[Expression] {
    * or returns a `TypeCheckResult` with an error message if invalid.
    * Note: it's not valid to call this method until `childrenResolved == true`.
    */
+  // TypeCheckResult 有两个子 Object，分别是 TypeCheckSuccess 和 TypeCheckFailure
   def checkInputDataTypes(): TypeCheckResult = TypeCheckResult.TypeCheckSuccess
 
   /**
@@ -204,6 +222,7 @@ abstract class Expression extends TreeNode[Expression] {
    * Returns SQL representation of this expression.  For expressions extending [[NonSQLExpression]],
    * this method may return an arbitrary user facing string.
    */
+  // 返回这个 Expression 的 对应的 sql
   def sql: String = {
     val childrenSQL = children.map(_.sql).mkString(", ")
     s"$prettyName($childrenSQL)"
@@ -216,6 +235,7 @@ abstract class Expression extends TreeNode[Expression] {
  * time (e.g. Star). This trait is used by those expressions.
  */
 trait Unevaluable extends Expression {
+  // 不可执行的 Expression，例如 select * 里的*，在解析阶段会展开成所有的字段
 
   final override def eval(input: InternalRow = null): Any =
     throw new UnsupportedOperationException(s"Cannot evaluate expression: $this")
@@ -259,6 +279,9 @@ trait NonSQLExpression extends Expression {
  * An expression that is nondeterministic.
  */
 trait Nondeterministic extends Expression {
+  // 具有不确定性的 Expression
+  // 所以 deterministic 肯定是 false
+  // 也不可折叠
   final override def deterministic: Boolean = false
   final override def foldable: Boolean = false
 
@@ -295,7 +318,8 @@ trait Nondeterministic extends Expression {
  * A leaf expression, i.e. one without any child expressions.
  */
 abstract class LeafExpression extends Expression {
-
+  // 不包含子 Expression 的 Expression
+  // 所以children是Nil
   override final def children: Seq[Expression] = Nil
 }
 
@@ -305,6 +329,7 @@ abstract class LeafExpression extends Expression {
  * if the input is evaluated to null.
  */
 abstract class UnaryExpression extends Expression {
+  // 包含一个 子 Expression 的 Expression
 
   def child: Expression
 
@@ -318,6 +343,8 @@ abstract class UnaryExpression extends Expression {
    * If subclass of UnaryExpression override nullable, probably should also override this.
    */
   override def eval(input: InternalRow): Any = {
+    // 输入一行，用input表示，一行都是 InternalRow 类型
+    // 然后把 input 传给 唯一的子 Expression 去执行（调用 eval 方法），得到返回结果
     val value = child.eval(input)
     if (value == null) {
       null

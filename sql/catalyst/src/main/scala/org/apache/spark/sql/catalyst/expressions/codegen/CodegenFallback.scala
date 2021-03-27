@@ -23,6 +23,7 @@ import org.apache.spark.sql.catalyst.expressions.{Expression, LeafExpression, No
  * A trait that can be used to provide a fallback mode for expression code generation.
  */
 trait CodegenFallback extends Expression {
+// 不支持代码生成的表达式
 
   protected def doGenCode(ctx: CodegenContext, ev: ExprCode): ExprCode = {
     // LeafNode does not need `input`
