@@ -36,6 +36,8 @@ class BooleanType private() extends AtomicType {
   // Defined with a private constructor so the companion object is the only possible instantiation.
   private[sql] type InternalType = Boolean
   @transient private[sql] lazy val tag = ScalaReflectionLock.synchronized { typeTag[InternalType] }
+
+  // bool 的比较在内部隐式转换为 InternalType
   private[sql] val ordering = implicitly[Ordering[InternalType]]
 
   /**

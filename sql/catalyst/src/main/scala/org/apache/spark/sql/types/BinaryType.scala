@@ -39,6 +39,7 @@ class BinaryType private() extends AtomicType {
 
   @transient private[sql] lazy val tag = ScalaReflectionLock.synchronized { typeTag[InternalType] }
 
+  // BinaryType 需要比较大小，所以有这个变量
   private[sql] val ordering = new Ordering[InternalType] {
     def compare(x: Array[Byte], y: Array[Byte]): Int = {
       TypeUtils.compareBinary(x, y)

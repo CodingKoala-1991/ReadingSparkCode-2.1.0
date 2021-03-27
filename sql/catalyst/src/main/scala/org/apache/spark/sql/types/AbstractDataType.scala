@@ -29,6 +29,8 @@ private[sql] abstract class AbstractDataType {
   /**
    * The default concrete type to use if we want to cast a null literal into this type.
    */
+  // 默认的具体类型
+  // 当强制转换一个 null 字面量变成这个 DataType 的时候，转换成的具体 DataType
   private[sql] def defaultConcreteType: DataType
 
   /**
@@ -43,9 +45,13 @@ private[sql] abstract class AbstractDataType {
    *   NumericType.acceptsType(DecimalType(10, 2))
    * }}}
    */
+  // 个人理解，就是这个 DataType 能和什么其他什么类型的 DataType 兼容
+  // 如果能兼容就返回 true
+  // 似乎一般都是 父类 可以兼容 子类
   private[sql] def acceptsType(other: DataType): Boolean
 
   /** Readable string representation for the type. */
+  // DataType 的特定表示格式
   private[sql] def simpleString: String
 }
 
@@ -61,15 +67,20 @@ private[sql] abstract class AbstractDataType {
  * This means that we prefer StringType over BinaryType if it is possible to cast to StringType.
  */
 private[sql] class TypeCollection(private val types: Seq[AbstractDataType])
+  // 集合类型的 DataType
   extends AbstractDataType {
 
   require(types.nonEmpty, s"TypeCollection ($types) cannot be empty")
 
+  // 返回的是第一个元素的 defaultConcreteType
   override private[sql] def defaultConcreteType: DataType = types.head.defaultConcreteType
 
+  // 每一个元素都要被 accept
   override private[sql] def acceptsType(other: DataType): Boolean =
     types.exists(_.acceptsType(other))
 
+  // 最终的格式是 (A or B or C)
+  // mkString 的用法就是这样的
   override private[sql] def simpleString: String = {
     types.map(_.simpleString).mkString("(", " or ", ")")
   }
@@ -109,6 +120,8 @@ private[sql] object TypeCollection {
  * An [[AbstractDataType]] that matches any concrete data types.
  */
 protected[sql] object AnyDataType extends AbstractDataType {
+  // AnyDataType 可以对应任何类型
+  // 这里是 object extends 了一个 Abstract 的 DataType
 
   // Note that since AnyDataType matches any concrete types, defaultConcreteType should never
   // be invoked.
