@@ -55,6 +55,7 @@ case class InsertIntoHadoopFsRelationCommand(
     mode: SaveMode,
     catalogTable: Option[CatalogTable])
   extends RunnableCommand {
+  // 向 hadoop 的 relation 中插入数据？？？？？？？？？？？
 
   import org.apache.spark.sql.catalyst.catalog.ExternalCatalogUtils.escapePathName
 

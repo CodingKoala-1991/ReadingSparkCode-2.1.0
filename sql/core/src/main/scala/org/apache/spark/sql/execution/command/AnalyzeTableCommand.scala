@@ -37,6 +37,7 @@ import org.apache.spark.sql.internal.SessionState
 case class AnalyzeTableCommand(
     tableIdent: TableIdentifier,
     noscan: Boolean = true) extends RunnableCommand {
+    //
 
   override def run(sparkSession: SparkSession): Seq[Row] = {
     val sessionState = sparkSession.sessionState

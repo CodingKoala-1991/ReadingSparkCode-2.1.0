@@ -30,6 +30,7 @@ import org.apache.spark.sql.types.{IntegerType, StringType, StructField, StructT
  * Adds a jar to the current session so it can be used (for UDFs or serdes).
  */
 case class AddJarCommand(path: String) extends RunnableCommand {
+// 添加jar包
   override val output: Seq[Attribute] = {
     val schema = StructType(
       StructField("result", IntegerType, nullable = false) :: Nil)
@@ -46,6 +47,7 @@ case class AddJarCommand(path: String) extends RunnableCommand {
  * Adds a file to the current session so it can be used.
  */
 case class AddFileCommand(path: String) extends RunnableCommand {
+// 添加文件
   override def run(sparkSession: SparkSession): Seq[Row] = {
     sparkSession.sparkContext.addFile(path)
     Seq.empty[Row]
@@ -57,6 +59,7 @@ case class AddFileCommand(path: String) extends RunnableCommand {
  * If file paths are provided, return the ones that are added to resources.
  */
 case class ListFilesCommand(files: Seq[String] = Seq.empty[String]) extends RunnableCommand {
+// 列出现有的文件
   override val output: Seq[Attribute] = {
     AttributeReference("Results", StringType, nullable = false)() :: Nil
   }
@@ -84,6 +87,7 @@ case class ListFilesCommand(files: Seq[String] = Seq.empty[String]) extends Runn
  * If jar files are provided, return the ones that are added to resources.
  */
 case class ListJarsCommand(jars: Seq[String] = Seq.empty[String]) extends RunnableCommand {
+// 列出现有的jar包
   override val output: Seq[Attribute] = {
     AttributeReference("Results", StringType, nullable = false)() :: Nil
   }

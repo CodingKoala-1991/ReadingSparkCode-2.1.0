@@ -94,6 +94,7 @@ case class CreateViewCommand(
     replace: Boolean,
     viewType: ViewType)
   extends RunnableCommand {
+  // 创建 view
 
   override protected def innerChildren: Seq[QueryPlan[_]] = Seq(child)
 
@@ -251,6 +252,7 @@ case class AlterViewAsCommand(
     name: TableIdentifier,
     originalText: String,
     query: LogicalPlan) extends RunnableCommand {
+    // 修改 view
 
   override protected def innerChildren: Seq[QueryPlan[_]] = Seq(query)
 

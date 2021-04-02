@@ -338,6 +338,12 @@ abstract class LogicalPlan extends QueryPlan[LogicalPlan] with Logging {
 /**
  * A logical plan node with no children.
  */
+// LeafNode 意味着 这个LogicalPlan 没有 子LogicalPlan
+    // RunnableCommand 是可以直接运行的命令，是一类较多的 LeafNode 类型的 这个LogicalPlan，位于：org/apache/spark/sql/execution/command/commands.scala
+
+// UnaryNode 有一个 子LogicalPlan
+
+// BinaryNode 有左右两个 子LogicalPlan
 abstract class LeafNode extends LogicalPlan {
   override final def children: Seq[LogicalPlan] = Nil
   override def producedAttributes: AttributeSet = outputSet

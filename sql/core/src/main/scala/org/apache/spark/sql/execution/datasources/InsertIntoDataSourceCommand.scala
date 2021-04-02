@@ -32,6 +32,7 @@ case class InsertIntoDataSourceCommand(
     query: LogicalPlan,
     overwrite: OverwriteOptions)
   extends RunnableCommand {
+  // 插入数据？？？？？？？？？？
 
   override protected def innerChildren: Seq[QueryPlan[_]] = Seq(query)
 

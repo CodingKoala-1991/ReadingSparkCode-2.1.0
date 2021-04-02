@@ -41,6 +41,7 @@ import org.apache.spark.sql.types._
  */
 case class CreateDataSourceTableCommand(table: CatalogTable, ignoreIfExists: Boolean)
   extends RunnableCommand {
+  // 又是一个建表语句
 
   override def run(sparkSession: SparkSession): Seq[Row] = {
     assert(table.tableType != CatalogTableType.VIEW)
@@ -128,6 +129,7 @@ case class CreateDataSourceTableAsSelectCommand(
     mode: SaveMode,
     query: LogicalPlan)
   extends RunnableCommand {
+  // 又是一个建表语句
 
   override protected def innerChildren: Seq[LogicalPlan] = Seq(query)
 

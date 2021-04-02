@@ -35,6 +35,7 @@ import org.apache.spark.sql.execution.datasources.LogicalRelation
 case class AnalyzeColumnCommand(
     tableIdent: TableIdentifier,
     columnNames: Seq[String]) extends RunnableCommand {
+    //
 
   override def run(sparkSession: SparkSession): Seq[Row] = {
     val sessionState = sparkSession.sessionState

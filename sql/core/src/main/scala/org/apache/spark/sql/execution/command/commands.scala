@@ -36,6 +36,7 @@ import org.apache.spark.sql.types._
  * wrapped in `ExecutedCommand` during execution.
  */
 trait RunnableCommand extends logical.Command {
+  // 实现的 class 重写 run 方法
   def run(sparkSession: SparkSession): Seq[Row]
 }
 
@@ -43,6 +44,7 @@ trait RunnableCommand extends logical.Command {
  * A physical operator that executes the run method of a `RunnableCommand` and
  * saves the result to prevent multiple executions.
  */
+// 这个class 不是一个 LogicalPlan
 case class ExecutedCommandExec(cmd: RunnableCommand) extends SparkPlan {
   /**
    * A concrete command should override this lazy field to wrap up any side effects caused by the
@@ -97,6 +99,8 @@ case class ExplainCommand(
     extended: Boolean = false,
     codegen: Boolean = false)
   extends RunnableCommand {
+  // explain 命令，输出的结果只有一个 Row
+  // Row 里的内容是 执行计划的 string
 
   // Run through the optimizer to generate the physical plan.
   override def run(sparkSession: SparkSession): Seq[Row] = try {

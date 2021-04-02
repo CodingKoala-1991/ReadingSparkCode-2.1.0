@@ -59,6 +59,7 @@ case class CreateDatabaseCommand(
     comment: Option[String],
     props: Map[String, String])
   extends RunnableCommand {
+  // 创建表，run方法 返回的是 Seq.empty[Row]
 
   override def run(sparkSession: SparkSession): Seq[Row] = {
     val catalog = sparkSession.sessionState.catalog
@@ -95,6 +96,7 @@ case class DropDatabaseCommand(
     ifExists: Boolean,
     cascade: Boolean)
   extends RunnableCommand {
+  // 返回     Seq.empty[Row]
 
   override def run(sparkSession: SparkSession): Seq[Row] = {
     sparkSession.sessionState.catalog.dropDatabase(databaseName, ifExists, cascade)
@@ -115,6 +117,7 @@ case class AlterDatabasePropertiesCommand(
     databaseName: String,
     props: Map[String, String])
   extends RunnableCommand {
+  //     Seq.empty[Row]
 
   override def run(sparkSession: SparkSession): Seq[Row] = {
     val catalog = sparkSession.sessionState.catalog
@@ -139,6 +142,8 @@ case class DescribeDatabaseCommand(
     databaseName: String,
     extended: Boolean)
   extends RunnableCommand {
+  // describeDB 命令
+  // 返回若干Row，关于DB的信息
 
   override def run(sparkSession: SparkSession): Seq[Row] = {
     val dbMetadata: CatalogDatabase =
@@ -181,6 +186,7 @@ case class DropTableCommand(
     ifExists: Boolean,
     isView: Boolean,
     purge: Boolean) extends RunnableCommand {
+    // 返回     Seq.empty[Row]
 
   override def run(sparkSession: SparkSession): Seq[Row] = {
     val catalog = sparkSession.sessionState.catalog
@@ -225,6 +231,7 @@ case class AlterTableSetPropertiesCommand(
     properties: Map[String, String],
     isView: Boolean)
   extends RunnableCommand {
+  // 返回     Seq.empty[Row]
 
   override def run(sparkSession: SparkSession): Seq[Row] = {
     val catalog = sparkSession.sessionState.catalog
@@ -253,6 +260,7 @@ case class AlterTableUnsetPropertiesCommand(
     ifExists: Boolean,
     isView: Boolean)
   extends RunnableCommand {
+  // 同上
 
   override def run(sparkSession: SparkSession): Seq[Row] = {
     val catalog = sparkSession.sessionState.catalog
@@ -289,6 +297,7 @@ case class AlterTableSerDePropertiesCommand(
     serdeProperties: Option[Map[String, String]],
     partSpec: Option[TablePartitionSpec])
   extends RunnableCommand {
+  //     返回 Seq.empty[Row]
 
   // should never happen if we parsed things correctly
   require(serdeClassName.isDefined || serdeProperties.isDefined,
@@ -343,6 +352,8 @@ case class AlterTableAddPartitionCommand(
     partitionSpecsAndLocs: Seq[(TablePartitionSpec, Option[String])],
     ifNotExists: Boolean)
   extends RunnableCommand {
+  // 添加 partition
+  // 返回     Seq.empty[Row]
 
   override def run(sparkSession: SparkSession): Seq[Row] = {
     val catalog = sparkSession.sessionState.catalog
@@ -377,6 +388,7 @@ case class AlterTableRenamePartitionCommand(
     oldPartition: TablePartitionSpec,
     newPartition: TablePartitionSpec)
   extends RunnableCommand {
+  // 重命名 partition ，返回     Seq.empty[Row]
 
   override def run(sparkSession: SparkSession): Seq[Row] = {
     val catalog = sparkSession.sessionState.catalog
@@ -424,6 +436,7 @@ case class AlterTableDropPartitionCommand(
     purge: Boolean,
     retainData: Boolean)
   extends RunnableCommand {
+  // 删除partition，返回    Seq.empty[Row]
 
   override def run(sparkSession: SparkSession): Seq[Row] = {
     val catalog = sparkSession.sessionState.catalog
@@ -463,6 +476,7 @@ case class PartitionStatistics(numFiles: Int, totalSize: Long)
 case class AlterTableRecoverPartitionsCommand(
     tableName: TableIdentifier,
     cmd: String = "ALTER TABLE RECOVER PARTITIONS") extends RunnableCommand {
+    // partition 的统计信息
 
   // These are list of statistics that can be collected quickly without requiring a scan of the data
   // see https://github.com/apache/hive/blob/master/
@@ -667,6 +681,8 @@ case class AlterTableSetLocationCommand(
     partitionSpec: Option[TablePartitionSpec],
     location: String)
   extends RunnableCommand {
+  // 修改 table 的 location
+  // 返回也是     Seq.empty[Row]
 
   override def run(sparkSession: SparkSession): Seq[Row] = {
     val catalog = sparkSession.sessionState.catalog

@@ -27,6 +27,7 @@ case class CacheTableCommand(
     tableIdent: TableIdentifier,
     plan: Option[LogicalPlan],
     isLazy: Boolean) extends RunnableCommand {
+    //
   require(plan.isEmpty || tableIdent.database.isEmpty,
     "Database name is not allowed in CACHE TABLE AS SELECT")
 
@@ -53,6 +54,7 @@ case class CacheTableCommand(
 case class UncacheTableCommand(
     tableIdent: TableIdentifier,
     ifExists: Boolean) extends RunnableCommand {
+    //
 
   override def run(sparkSession: SparkSession): Seq[Row] = {
     val tableId = tableIdent.quotedString
@@ -69,6 +71,7 @@ case class UncacheTableCommand(
  * Clear all cached data from the in-memory cache.
  */
 case object ClearCacheCommand extends RunnableCommand {
+//
 
   override def run(sparkSession: SparkSession): Seq[Row] = {
     sparkSession.catalog.clearCache()

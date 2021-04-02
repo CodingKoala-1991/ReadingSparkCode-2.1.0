@@ -32,12 +32,15 @@ import org.apache.spark.sql.types.StringType
  * }}}
  */
 case class ShowDatabasesCommand(databasePattern: Option[String]) extends RunnableCommand {
+// show database
 
   // The result of SHOW DATABASES has one column called 'databaseName'
+  // output 的第一列是 databaseName
   override val output: Seq[Attribute] = {
     AttributeReference("databaseName", StringType, nullable = false)() :: Nil
   }
 
+// 通过 catalog 拿到 DB 的list
   override def run(sparkSession: SparkSession): Seq[Row] = {
     val catalog = sparkSession.sessionState.catalog
     val databases =
@@ -54,6 +57,7 @@ case class ShowDatabasesCommand(databasePattern: Option[String]) extends Runnabl
  * }}}
  */
 case class SetDatabaseCommand(databaseName: String) extends RunnableCommand {
+// 设置当前DB
 
   override def run(sparkSession: SparkSession): Seq[Row] = {
     sparkSession.sessionState.catalog.setCurrentDatabase(databaseName)

@@ -33,6 +33,7 @@ import org.apache.spark.sql.types.{StringType, StructField, StructType}
  * }}}
  */
 case class SetCommand(kv: Option[(String, Option[String])]) extends RunnableCommand with Logging {
+// set 某些属性
 
   private def keyValueOutput: Seq[Attribute] = {
     val schema = StructType(
@@ -135,6 +136,7 @@ object SetCommand {
  * }}}
  */
 case object ResetCommand extends RunnableCommand with Logging {
+// 设置某些属性
 
   override def run(sparkSession: SparkSession): Seq[Row] = {
     sparkSession.sessionState.conf.clear()

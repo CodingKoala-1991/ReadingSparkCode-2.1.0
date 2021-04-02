@@ -58,6 +58,9 @@ case class CreateTableLikeCommand(
     targetTable: TableIdentifier,
     sourceTable: TableIdentifier,
     ifNotExists: Boolean) extends RunnableCommand {
+    // 用 like 的方式，借助一个已经存在的 table
+    // 来创建新的 table
+    // 返回     Seq.empty[Row]
 
   override def run(sparkSession: SparkSession): Seq[Row] = {
     val catalog = sparkSession.sessionState.catalog
@@ -111,6 +114,7 @@ case class CreateTableLikeCommand(
  * }}}
  */
 case class CreateTableCommand(table: CatalogTable, ifNotExists: Boolean) extends RunnableCommand {
+// 创建 新 table
 
   override def run(sparkSession: SparkSession): Seq[Row] = {
     sparkSession.sessionState.catalog.createTable(table, ifNotExists)
@@ -133,6 +137,7 @@ case class AlterTableRenameCommand(
     newName: TableIdentifier,
     isView: Boolean)
   extends RunnableCommand {
+  //     Seq.empty[Row]
 
   override def run(sparkSession: SparkSession): Seq[Row] = {
     val catalog = sparkSession.sessionState.catalog
@@ -181,6 +186,7 @@ case class LoadDataCommand(
     isLocal: Boolean,
     isOverwrite: Boolean,
     partition: Option[TablePartitionSpec]) extends RunnableCommand {
+    //     Seq.empty[Row]
 
   override def run(sparkSession: SparkSession): Seq[Row] = {
     val catalog = sparkSession.sessionState.catalog
@@ -320,6 +326,7 @@ case class LoadDataCommand(
 case class TruncateTableCommand(
     tableName: TableIdentifier,
     partitionSpec: Option[TablePartitionSpec]) extends RunnableCommand {
+    //     Seq.empty[Row]
 
   override def run(spark: SparkSession): Seq[Row] = {
     val catalog = spark.sessionState.catalog
@@ -408,6 +415,7 @@ case class DescribeTableCommand(
     isExtended: Boolean,
     isFormatted: Boolean)
   extends RunnableCommand {
+  // 描述某个 table
 
   override val output: Seq[Attribute] = Seq(
     // Column names are based on Hive.
@@ -596,6 +604,8 @@ case class DescribeTableCommand(
 case class ShowTablesCommand(
     databaseName: Option[String],
     tableIdentifierPattern: Option[String]) extends RunnableCommand {
+    // show tables
+    // 返回值的 每一个 Row 都是一个 table 的信息
 
   // The result of SHOW TABLES has three columns: database, tableName and isTemporary.
   override val output: Seq[Attribute] = {
@@ -630,6 +640,7 @@ case class ShowTablesCommand(
  */
 case class ShowTablePropertiesCommand(table: TableIdentifier, propertyKey: Option[String])
   extends RunnableCommand {
+  // 返回值的 Row 是一些table 的具体信息
 
   override val output: Seq[Attribute] = {
     val schema = AttributeReference("value", StringType, nullable = false)() :: Nil
@@ -672,6 +683,7 @@ case class ShowTablePropertiesCommand(table: TableIdentifier, propertyKey: Optio
 case class ShowColumnsCommand(
     databaseName: Option[String],
     tableName: TableIdentifier) extends RunnableCommand {
+    // 返回某个 column 的信息
   override val output: Seq[Attribute] = {
     AttributeReference("col_name", StringType, nullable = false)() :: Nil
   }
@@ -711,6 +723,7 @@ case class ShowColumnsCommand(
 case class ShowPartitionsCommand(
     tableName: TableIdentifier,
     spec: Option[TablePartitionSpec]) extends RunnableCommand {
+    //
   override val output: Seq[Attribute] = {
     AttributeReference("partition", StringType, nullable = false)() :: Nil
   }
@@ -757,6 +770,7 @@ case class ShowPartitionsCommand(
 }
 
 case class ShowCreateTableCommand(table: TableIdentifier) extends RunnableCommand {
+// 建表语句
   override val output: Seq[Attribute] = Seq(
     AttributeReference("createtab_stmt", StringType, nullable = false)()
   )

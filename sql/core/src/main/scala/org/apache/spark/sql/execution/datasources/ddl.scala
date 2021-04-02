@@ -29,6 +29,7 @@ case class CreateTable(
     tableDesc: CatalogTable,
     mode: SaveMode,
     query: Option[LogicalPlan]) extends Command {
+    // 又是一个建表语句？？？
   assert(tableDesc.provider.isDefined, "The table to be created must have a provider.")
 
   if (query.isEmpty) {
@@ -50,6 +51,7 @@ case class CreateTempViewUsing(
     global: Boolean,
     provider: String,
     options: Map[String, String]) extends RunnableCommand {
+    // 又是创建一个 view？？？？？？？
 
   if (tableIdent.database.isDefined) {
     throw new AnalysisException(
@@ -87,6 +89,7 @@ case class CreateTempViewUsing(
 
 case class RefreshTable(tableIdent: TableIdentifier)
   extends RunnableCommand {
+  // 刷新表？？？？
 
   override def run(sparkSession: SparkSession): Seq[Row] = {
     // Refresh the given table's metadata. If this table is cached as an InMemoryRelation,
@@ -98,6 +101,7 @@ case class RefreshTable(tableIdent: TableIdentifier)
 
 case class RefreshResource(path: String)
   extends RunnableCommand {
+  //
 
   override def run(sparkSession: SparkSession): Seq[Row] = {
     sparkSession.catalog.refreshByPath(path)

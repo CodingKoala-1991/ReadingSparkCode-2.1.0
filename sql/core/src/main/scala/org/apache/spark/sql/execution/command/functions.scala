@@ -46,6 +46,7 @@ case class CreateFunctionCommand(
     resources: Seq[FunctionResource],
     isTemp: Boolean)
   extends RunnableCommand {
+  // 创建方法注册到 SQL
 
   override def run(sparkSession: SparkSession): Seq[Row] = {
     val catalog = sparkSession.sessionState.catalog
@@ -84,6 +85,7 @@ case class CreateFunctionCommand(
 case class DescribeFunctionCommand(
     functionName: FunctionIdentifier,
     isExtended: Boolean) extends RunnableCommand {
+    // 获得方法的信息
 
   override val output: Seq[Attribute] = {
     val schema = StructType(StructField("function_desc", StringType, nullable = false) :: Nil)
@@ -153,6 +155,7 @@ case class DropFunctionCommand(
     ifExists: Boolean,
     isTemp: Boolean)
   extends RunnableCommand {
+  // drop 掉一些方法
 
   override def run(sparkSession: SparkSession): Seq[Row] = {
     val catalog = sparkSession.sessionState.catalog
@@ -191,6 +194,7 @@ case class ShowFunctionsCommand(
     pattern: Option[String],
     showUserFunctions: Boolean,
     showSystemFunctions: Boolean) extends RunnableCommand {
+    // 列出现有哪些方法
 
   override val output: Seq[Attribute] = {
     val schema = StructType(StructField("function", StringType, nullable = false) :: Nil)
