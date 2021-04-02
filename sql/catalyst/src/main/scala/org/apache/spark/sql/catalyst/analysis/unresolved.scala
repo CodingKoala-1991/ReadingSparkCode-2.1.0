@@ -38,6 +38,9 @@ class UnresolvedException[TreeType <: TreeNode[_]](tree: TreeType, function: Str
  * Holds the name of a relation that has yet to be looked up in a catalog.
  */
 case class UnresolvedRelation(
+// 构造需要两个参数
+// tableIdentifier： 表示这个 unresolved 的 relation 对应的表的名称，但是并没有真正的绑定到 Catalog 上具体的真实表。
+// alias：表的别名
     tableIdentifier: TableIdentifier,
     alias: Option[String] = None) extends LeafNode {
 
@@ -109,6 +112,12 @@ object UnresolvedAttribute {
   /**
    * Creates an [[UnresolvedAttribute]], parsing segments separated by dots ('.').
    */
+  // 个人理解，在创建 UnresolvedAttribute 的时候
+  // 传入的字段，比如是 table1.column1 是一个完整的字符串
+  // 但是在下面这个伴生对象的时候，会首先根据  .   分割得到一个list
+  // list 在这里就是 [table1, column1]
+  // 然后用这个list 去初始化一个真正的 UnresolvedAttribute 对象
+  // 这个list 其实就是对应 UnresolvedAttribute 里的 nameParts 这个属性
   def apply(name: String): UnresolvedAttribute = new UnresolvedAttribute(name.split("\\."))
 
   /**

@@ -17,7 +17,9 @@
 
 package org.apache.spark.sql.catalyst.expressions
 
-
+// 判断两个 Attribute 是否相等的封装类
+// 只看 expression 的 id 是否相等（exprId）
+// 每一个 Attribute 其实也是一个 expression
 protected class AttributeEquals(val a: Attribute) {
   override def hashCode(): Int = a match {
     case ar: AttributeReference => ar.exprId.hashCode()
@@ -57,6 +59,7 @@ object AttributeSet {
  * and also makes doing transformations hard (we always try keep older trees instead of new ones
  * when the transformation was a no-op).
  */
+ // 用来保存 Attribute 的 集合类
 class AttributeSet private (val baseSet: Set[AttributeEquals])
   extends Traversable[Attribute] with Serializable {
 

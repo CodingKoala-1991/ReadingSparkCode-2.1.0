@@ -89,6 +89,8 @@ abstract class Expression extends TreeNode[Expression] {
 
   // 该 Expression 包括的所有的 的属性 Attribute，做成了一个 Set
   // 每个孩子都通过 references 方法嵌套下去，也就是说会获得所有直接孩子和间接孩子的 属性（Attribute）
+  // references 指的是这个 expression 中牵涉到的所有的 Attribute 的 集合
+  // Attribute 是一种比较特殊的 Expression，所以这种 Expression 对于 Attribute 的引用就是它自己
   def references: AttributeSet = AttributeSet(children.flatMap(_.references.iterator))
 
   /** Returns the result of evaluating this expression on a given input Row */

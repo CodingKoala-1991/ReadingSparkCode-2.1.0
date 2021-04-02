@@ -606,6 +606,9 @@ class Analyzer(
       case q: LogicalPlan =>
         logTrace(s"Attempting to resolve ${q.simpleString}")
         q transformExpressionsUp  {
+          // 这里的 nameParts 是一个 Seq[String]，表示还没有被 resolve 的 attribute 的字段形成的list
+          // nameParts 是属于 某一个 UnresolvedAttribute 的
+          // 参考 UnresolvedAttribute 的伴生object 我自己写的注释
           case u @ UnresolvedAttribute(nameParts) =>
             // Leave unchanged if resolution fails.  Hopefully will be resolved next round.
             val result =

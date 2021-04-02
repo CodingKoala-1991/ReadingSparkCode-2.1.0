@@ -285,6 +285,13 @@ abstract class TreeNode[BaseType <: TreeNode[BaseType]] extends Product {
    *
    * @param rule the function use to transform this nodes children
    */
+  // 实际上是调用 transformDown 方法
+  // 最终对返回类型是 TreeNode，如果是其他TreeNode 的子类的对象调用这个方法
+  // 最终返回的可能是这个 子类的类型，比如 LogicalPlan
+  // rule 是一个规则，是一个 Scala 的偏函数
+  // 这里顺便记录一下偏函数
+  // 具体可以参考这个
+  // http://songkun.me/2018/05/15/scala-partialfunction-1/
   def transform(rule: PartialFunction[BaseType, BaseType]): BaseType = {
     transformDown(rule)
   }
@@ -295,15 +302,27 @@ abstract class TreeNode[BaseType <: TreeNode[BaseType]] extends Product {
    *
    * @param rule the function used to transform this nodes children
    */
+  // 使用 rule 规则，对整棵 Tree 进行先序遍历（down）
   def transformDown(rule: PartialFunction[BaseType, BaseType]): BaseType = {
     val afterRule = CurrentOrigin.withOrigin(origin) {
+    // 先序遍历，先访问整棵树的 root 节点
+    // 所以这里先用rule 规则去适配 root
+    // applyOrElse 是 Scala 中偏函数的特殊用法，如果传入的 root 的类型能够匹配 rule 中定义好的某个case
+    // 那么就会执行 rule 中这个case 对应的语句，返回相应的 TreeNode。
+    // 如果没有在rule 匹配出任何一个 case，那么就不变，就是 identity[BaseType]
+    // identity[BaseType] 也是 Scala 中预定义的一个语法，就是不变的意思
       rule.applyOrElse(this, identity[BaseType])
     }
 
     // Check if unchanged and then possibly return old copy to avoid gc churn.
+    // 然后先判断，root 节点有没有发生变化
+    // 然后 (t, r) => t.transformDown(r) 传入
+    // 也就是对 child 继续执行 先序遍历（Down）
     if (this fastEquals afterRule) {
       transformChildren(rule, (t, r) => t.transformDown(r))
     } else {
+      // 如果应用 rule 之后，命中，那么这个时候 root 就不是 this
+      // 换成了 afterRule，所以对 afterRule 的Child 继续应用 rule 遍历
       afterRule.transformChildren(rule, (t, r) => t.transformDown(r))
     }
   }
@@ -315,13 +334,19 @@ abstract class TreeNode[BaseType <: TreeNode[BaseType]] extends Product {
    *
    * @param rule the function use to transform this nodes children
    */
+  // 使用 rule 规则，对Tree 进行后序遍历（Up）
   def transformUp(rule: PartialFunction[BaseType, BaseType]): BaseType = {
+    // 先对 Child 应用 rule 进行遍历
     val afterRuleOnChildren = transformChildren(rule, (t, r) => t.transformUp(r))
     if (this fastEquals afterRuleOnChildren) {
       CurrentOrigin.withOrigin(origin) {
+        // 如果 this 没有变化，直接对 this 应用 rule
         rule.applyOrElse(this, identity[BaseType])
       }
     } else {
+      // 如果 Child 发生了变化，this 肯定发生了变化（除了this自身，他的child 发生了变化，所以整个 this可以认为发生了变化）
+      // this 发生了变化之后，返回的是 afterRuleOnChildren，不再是 this 了
+      // 这个时候 对 afterRuleOnChildren 应用 rule 进行解析
       CurrentOrigin.withOrigin(origin) {
         rule.applyOrElse(afterRuleOnChildren, identity[BaseType])
       }
@@ -333,14 +358,24 @@ abstract class TreeNode[BaseType <: TreeNode[BaseType]] extends Product {
    * this node.  When `rule` does not apply to a given node it is left unchanged.
    * @param rule the function used to transform this nodes children
    */
+  // 这里传入的 rule，就是上面说的 rule
+  // nextOperation 则是一个方法定义，实际上传入的真正函数，对应上面的 (t, r) => t.transformDown(r) 或者 (t, r) => t.transformUp(r)
+  // 这个方法，对当前 root 的所有孩子继续执行 先序transformDown 或者 后序transformUp 遍历的操作
   protected def transformChildren(
       rule: PartialFunction[BaseType, BaseType],
       nextOperation: (BaseType, PartialFunction[BaseType, BaseType]) => BaseType): BaseType = {
     if (children.nonEmpty) {
-      var changed = false
-      val newArgs = mapProductIterator {
+      var changed = false  // 标记子树是否发生修改
+      val newArgs = mapProductIterator {  // 遍历构成 root 的 所有参数，但是其实只看 TreeNode类型的节点
         case arg: TreeNode[_] if containsChild(arg) =>
+          // 这里假如 nextOperation 这个参数对应从 外部传过来的参数是
+          // (t, r) => t.transformDown(r)
+          // 那么，实际上下面这个就会当作 这样的语句执行
+          // val newChild = arg.transformDown(rule)
+          // 也就是 对 arg 这个节点继续递归的向下执行先序操作，同样是应用 rule
           val newChild = nextOperation(arg.asInstanceOf[BaseType], rule)
+          // 可能返回 新构造的 newChild，或者返回原来的 这个Child
+          // 取决于 rule 是否有能匹配上的 case 语句
           if (!(newChild fastEquals arg)) {
             changed = true
             newChild
@@ -390,6 +425,13 @@ abstract class TreeNode[BaseType <: TreeNode[BaseType]] extends Product {
         case nonChild: AnyRef => nonChild
         case null => null
       }
+      // 如果最终 child 的部分发生了变化，那么需要重新构造 root 下面的 child 的部分
+      // 但是似乎也是返回this ？？？？
+      // 只是调用 makeCopy(newArgs) 重新构造 this 的 child 部分
+      // 然后把 新的 child 部分赋值上去？
+      // 反正大体思路就是构建新的树，具体是说构建 child 部分还是构建 root 和 child 部分，再细细研究源码吧
+
+      // 如果没有变化，直接返回this就行
       if (changed) makeCopy(newArgs) else this
     } else {
       this
@@ -409,6 +451,11 @@ abstract class TreeNode[BaseType <: TreeNode[BaseType]] extends Product {
    * that are not present in the productIterator.
    * @param newArgs the new product arguments.
    */
+  // 返回被 rule 修改之后的这棵树，但是如果没有修改，就返回原来
+  // 具体实现没有看懂
+  // 但是大概猜测，就是每次传入一个 root，也就是 attachTree 里面的 this
+  // 构建好经过转换的 子树 之后，把子树 attach 到 this 节点上去，然后返回this节点？
+  // 但是大体意思应该就是构建 一棵基于原来的树的转换之后的 新树
   def makeCopy(newArgs: Array[AnyRef]): BaseType = attachTree(this, "makeCopy") {
     // Skip no-arg constructors that are just there for kryo.
     val ctors = getClass.getConstructors.filter(_.getParameterTypes.size != 0)

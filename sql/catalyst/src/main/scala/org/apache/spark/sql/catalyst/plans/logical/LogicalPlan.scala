@@ -28,6 +28,9 @@ import org.apache.spark.sql.types.StructType
 
 abstract class LogicalPlan extends QueryPlan[LogicalPlan] with Logging {
 
+  // LogicalPlan 有两个 属性
+  // resolved 是否被 解析完成
+  // canonicalized 和 QueryPlan 里的差不多意思，是否经过规整
   private var _analyzed: Boolean = false
 
   /**
@@ -53,6 +56,7 @@ abstract class LogicalPlan extends QueryPlan[LogicalPlan] with Logging {
    *
    * @param rule the function use to transform this nodes children
    */
+  // 逻辑挺烧脑的，各种偏函数
   def resolveOperators(rule: PartialFunction[LogicalPlan, LogicalPlan]): LogicalPlan = {
     if (!analyzed) {
       val afterRuleOnChildren = transformChildren(rule, (t, r) => t.resolveOperators(r))
@@ -74,8 +78,11 @@ abstract class LogicalPlan extends QueryPlan[LogicalPlan] with Logging {
    * Recursively transforms the expressions of a tree, skipping nodes that have already
    * been analyzed.
    */
+  // 对 LogicalPlan 的 expression 递归的进行逻辑转换
   def resolveExpressions(r: PartialFunction[Expression, Expression]): LogicalPlan = {
     this resolveOperators  {
+      // 传入的是一个偏函数的格式，所以这里的p不需要指定
+      // 在真正执行这个偏函数的时候，会真正传入需要执行 transformExpressions 的 p
       case p => p.transformExpressions(r)
     }
   }
@@ -100,6 +107,7 @@ abstract class LogicalPlan extends QueryPlan[LogicalPlan] with Logging {
    * Any operator that a Limit can be pushed passed should override this function (e.g., Union).
    * Any operator that can push through a Limit should override this function (e.g., Project).
    */
+   // 获取当前 LogicalPlan 可能计算的最大行数，一般用于 Limit 这种 Operator
   def maxRows: Option[Long] = None
 
   /**
@@ -111,11 +119,14 @@ abstract class LogicalPlan extends QueryPlan[LogicalPlan] with Logging {
    */
   lazy val resolved: Boolean = expressions.forall(_.resolved) && childrenResolved
 
+
+  // 如果这个 LogicalPlan 还没被 resolved， 那么会有一个 ' 的前缀进行标注
   override protected def statePrefix = if (!resolved) "'" else super.statePrefix
 
   /**
    * Returns true if all its children of this query plan have been resolved.
    */
+  // 看看 子LogicalPlan 节点是否已经 resolved
   def childrenResolved: Boolean = children.forall(_.resolved)
 
   override lazy val canonicalized: LogicalPlan = EliminateSubqueryAliases(this)
@@ -125,6 +136,12 @@ abstract class LogicalPlan extends QueryPlan[LogicalPlan] with Logging {
    * should only be called on analyzed plans since it will throw [[AnalysisException]] for
    * unresolved [[Attribute]]s.
    */
+  // Resolver 从源码看来，就是用于标记是否大小写敏感
+  // 如果敏感，就是字符串判断
+  // 如果不敏感，就是 (a: String, b: String) => a.equalsIgnoreCase(b)
+
+  // 把一个 schema 解析成具体的 Attribute
+  // schema 里的每一个字段，最终用的是 自身的 output 去匹配的
   def resolve(schema: StructType, resolver: Resolver): Seq[Attribute] = {
     schema.map { field =>
       resolve(field.name :: Nil, resolver).map {
@@ -142,9 +159,20 @@ abstract class LogicalPlan extends QueryPlan[LogicalPlan] with Logging {
    * nodes of this LogicalPlan. The attribute is expressed as
    * as string in the following form: `[scope].AttributeName.[nested].[fields]...`.
    */
+
+   // 递归的用孩子的 LogicalPlan 来解析这个 LogicalPlan 的 UnresolvedAttribute
+   // 一次调用可能还不够，需要多次调用可能才能完成
+  // 比如有些 LogicalPlan 的 子LogicalPlan 还没被解析完成，那么这个LogicalPlan 的 attribute 是不会被解析的
+  // 把没有 resolve 的 attribute 进行解析
+  // 这里的 nameParts 是一个 Seq[String]，表示还没有被 resolve 的 attribute 的 name 用 . 分割形成的list
+  // nameParts 属于同一个 UnresolvedAttribute ，对应 UnresolvedAttribute 的 nameParts 字段
   def resolveChildren(
       nameParts: Seq[String],
       resolver: Resolver): Option[NamedExpression] =
+    //   children 的output ，作为一个参数，调用 resolve 这个方法
+    // 这个时候，children 的 output 都已经 resolved
+    // 因此，nameParts 是该 LogicalPlan 没有解析的 attribute
+    // children.flatMap(_.output) 是 这个LogicalPlan 的孩子们的已经解析了的output组成的list
     resolve(nameParts, children.flatMap(_.output), resolver)
 
   /**
@@ -152,6 +180,7 @@ abstract class LogicalPlan extends QueryPlan[LogicalPlan] with Logging {
    * LogicalPlan. The attribute is expressed as string in the following form:
    * `[scope].AttributeName.[nested].[fields]...`.
    */
+  // 用 LogicalPlan 自身的 output 去 resolve  nameParts
   def resolve(
       nameParts: Seq[String],
       resolver: Resolver): Option[NamedExpression] =
@@ -162,6 +191,7 @@ abstract class LogicalPlan extends QueryPlan[LogicalPlan] with Logging {
    * don't split the name parts quoted by backticks, for example,
    * `ab.cd`.`efg` should be split into two parts "ab.cd" and "efg".
    */
+  // 和 上面的方法类似，但是 `` 中反引号包住的带. 的也当作一个整体进行处理
   def resolveQuoted(
       name: String,
       resolver: Resolver): Option[NamedExpression] = {
@@ -175,13 +205,24 @@ abstract class LogicalPlan extends QueryPlan[LogicalPlan] with Logging {
    * (i.e. table name, alias, or subquery alias).
    * See the comment above `candidates` variable in resolve() for semantics the returned data.
    */
+  // 被 LogicalPlan 内部调用
+  // attribute 是 resolved attribute
+  // 来自 LogicalPlan 的 孩子的 output
+  // nameParts 是这个 LogicalPlan unresolved 的 attribute
+  // 进入到这个方法，nameParts 的第一个元素是一个限定词，例如table 名，别名alias之类的
+  // 否则进不来
   private def resolveAsTableColumn(
       nameParts: Seq[String],
       resolver: Resolver,
       attribute: Attribute): Option[(Attribute, List[String])] = {
     assert(nameParts.length > 1)
+    // resolver 就是一个方法，判断结果，取决于大小写是否敏感
+    // resolver 就是接受两个参数，然后判断他们是否相等
+    // 返回 true 或者 false
+    // nameParts.head 拿到的是 nameParts 中的第一个元素
     if (attribute.qualifier.exists(resolver(_, nameParts.head))) {
       // At least one qualifier matches. See if remaining parts match.
+      // nameParts.tail 拿到的是除了第一个元素之外的剩余所有元素
       val remainingParts = nameParts.tail
       resolveAsColumn(remainingParts, resolver, attribute)
     } else {
@@ -195,11 +236,14 @@ abstract class LogicalPlan extends QueryPlan[LogicalPlan] with Logging {
    * Different from resolveAsTableColumn, this assumes `name` does NOT start with a qualifier.
    * See the comment above `candidates` variable in resolve() for semantics the returned data.
    */
+  // 被 LogicalPlan 内部调用
+  // 进入到这个方法，nameParts 的第一部分不是限定词，直接是 Column 的名了
   private def resolveAsColumn(
       nameParts: Seq[String],
       resolver: Resolver,
       attribute: Attribute): Option[(Attribute, List[String])] = {
     if (!attribute.isGenerated && resolver(attribute.name, nameParts.head)) {
+      // 匹配才会返回
       Option((attribute.withName(nameParts.head), nameParts.tail.toList))
     } else {
       None
@@ -207,6 +251,10 @@ abstract class LogicalPlan extends QueryPlan[LogicalPlan] with Logging {
   }
 
   /** Performs attribute resolution given a name and a sequence of possible attributes. */
+  // 被 LogicalPlan 内部调用
+  // nameParts 属于同一个 UnresolvedAttribute
+  // 说白了就是用所有 children 的 output（也就是已经 resolved 的 attribute）
+  // 去匹配这个 LogicalPlan 的 某一个 UnresolvedAttribute
   protected def resolve(
       nameParts: Seq[String],
       input: Seq[Attribute],
@@ -218,10 +266,16 @@ abstract class LogicalPlan extends QueryPlan[LogicalPlan] with Logging {
     // For example, consider an example where "a" is the table name, "b" is the column name,
     // and "c" is the struct field name, i.e. "a.b.c". In this case, Attribute will be "a.b",
     // and the second element will be List("c").
+    // Attribute 这个字段的值最多到table，字段里头还有其他折叠的，就不再管
+
+    // `table.column` pattern
     var candidates: Seq[(Attribute, List[String])] = {
       // If the name has 2 or more parts, try to resolve it as `table.column` first.
       if (nameParts.length > 1) {
         input.flatMap { option =>
+          // option 是 resolved attribute
+          // 来自 LogicalPlan 的 孩子的 output
+          // nameParts 是这个 LogicalPlan unresolved 的 attribute
           resolveAsTableColumn(nameParts, resolver, option)
         }
       } else {
@@ -230,6 +284,7 @@ abstract class LogicalPlan extends QueryPlan[LogicalPlan] with Logging {
     }
 
     // If none of attributes match `table.column` pattern, we try to resolve it as a column.
+    // `column` pattern
     if (candidates.isEmpty) {
       candidates = input.flatMap { candidate =>
         resolveAsColumn(nameParts, resolver, candidate)
@@ -240,9 +295,14 @@ abstract class LogicalPlan extends QueryPlan[LogicalPlan] with Logging {
 
     candidates.distinct match {
       // One match, no nested fields, use it.
+      // 这个 LogicalPlan 的 UnresolvedAttribute 和 来自 children 的 某个 resolved Attribute 匹配上了
+      // 而且，column 这级之后没有需要继续匹配的
+      // 一般的 SparkSQL 就是到这个层级就完事，因为一般也就是写到 column 这个级别的解析
       case Seq((a, Nil)) => Some(a)
 
       // One match, but we also need to extract the requested nested field.
+      // column 这级之后，需要继续匹配
+      // 这部分 抽取嵌套结构的 就没有继续看
       case Seq((a, nestedFields)) =>
         // The foldLeft adds ExtractValues for every remaining parts of the identifier,
         // and aliased it with the last part of the name.
@@ -254,11 +314,13 @@ abstract class LogicalPlan extends QueryPlan[LogicalPlan] with Logging {
         Some(Alias(fieldExprs, nestedFields.last)())
 
       // No matches.
+      // 没有匹配
       case Seq() =>
         logTrace(s"Could not find $name in ${input.mkString(", ")}")
         None
 
       // More than one match.
+      // 多个匹配，就会出现歧义，报错
       case ambiguousReferences =>
         val referenceNames = ambiguousReferences.map(_._1).mkString(", ")
         throw new AnalysisException(
@@ -269,6 +331,7 @@ abstract class LogicalPlan extends QueryPlan[LogicalPlan] with Logging {
   /**
    * Refreshes (or invalidates) any metadata/data cached in the plan recursively.
    */
+  // 刷新 LogicalPlan 中的 meta data
   def refresh(): Unit = children.foreach(_.refresh())
 }
 

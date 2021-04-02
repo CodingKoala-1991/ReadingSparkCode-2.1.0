@@ -54,6 +54,11 @@ sealed trait IdentifierWithDatabase {
  * When we register a permanent function in the FunctionRegistry, we use
  * unquotedString as the function name.
  */
+// IdentifierWithDatabase 是一个 trait
+// 有两个具体的class：TableIdentifier 和 FunctionIdentifier
+// TableIdentifier 用来标记一个具体表，结构可以是 db.table 或者 table
+// FunctionIdentifier 用来标记 DB 中的一个 function
+
 case class TableIdentifier(table: String, database: Option[String])
   extends IdentifierWithDatabase {
 

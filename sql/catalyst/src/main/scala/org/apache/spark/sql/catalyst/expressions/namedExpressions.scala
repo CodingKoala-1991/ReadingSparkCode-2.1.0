@@ -100,6 +100,7 @@ trait NamedExpression extends Expression {
 
 abstract class Attribute extends LeafExpression with NamedExpression with NullIntolerant {
 
+  // Attribute 是一种比较特殊的 Expression，所以这种 Expression 对于 Attribute 的引用就是它自己
   override def references: AttributeSet = AttributeSet(this)
 
   def withNullability(newNullability: Boolean): Attribute
