@@ -61,6 +61,7 @@ trait ObjectProducer extends LogicalPlan {
  * The output of its child must be a single-field row containing the input object.
  */
 trait ObjectConsumer extends UnaryNode {
+//
   assert(child.output.length == 1)
 
   // This operator always need all columns of its child, even it doesn't reference to.
@@ -76,6 +77,7 @@ case class DeserializeToObject(
     deserializer: Expression,
     outputObjAttr: Attribute,
     child: LogicalPlan) extends UnaryNode with ObjectProducer
+    //
 
 /**
  * Takes the input object from child and turns it into unsafe row using the given serializer
@@ -199,6 +201,7 @@ case class TypedFilter(
     argumentSchema: StructType,
     deserializer: Expression,
     child: LogicalPlan) extends UnaryNode {
+    //
 
   override def output: Seq[Attribute] = child.output
 
@@ -259,6 +262,7 @@ case class AppendColumns(
     deserializer: Expression,
     serializer: Seq[NamedExpression],
     child: LogicalPlan) extends UnaryNode {
+    //
 
   override def output: Seq[Attribute] = child.output ++ newColumns
 
@@ -312,6 +316,7 @@ case class MapGroups(
     dataAttributes: Seq[Attribute],
     outputObjAttr: Attribute,
     child: LogicalPlan) extends UnaryNode with ObjectProducer
+    //
 
 /** Factory for constructing new `FlatMapGroupsInR` nodes. */
 object FlatMapGroupsInR {
@@ -354,6 +359,7 @@ case class FlatMapGroupsInR(
     dataAttributes: Seq[Attribute],
     outputObjAttr: Attribute,
     child: LogicalPlan) extends UnaryNode with ObjectProducer{
+    //
 
   override lazy val schema = outputSchema
 

@@ -283,6 +283,7 @@ case class SimpleCatalogRelation(
     databaseName: String,
     metadata: CatalogTable)
   extends LeafNode with CatalogRelation {
+  //
 
   override def catalogTable: CatalogTable = metadata
 

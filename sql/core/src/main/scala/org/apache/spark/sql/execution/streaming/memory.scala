@@ -224,6 +224,7 @@ class MemorySink(val schema: StructType, outputMode: OutputMode) extends Sink wi
  * Used to query the data that has been written into a [[MemorySink]].
  */
 case class MemoryPlan(sink: MemorySink, output: Seq[Attribute]) extends LeafNode {
+//
   def this(sink: MemorySink) = this(sink, sink.schema.toAttributes)
 
   private val sizePerRow = sink.schema.toAttributes.map(_.dataType.defaultSize).sum

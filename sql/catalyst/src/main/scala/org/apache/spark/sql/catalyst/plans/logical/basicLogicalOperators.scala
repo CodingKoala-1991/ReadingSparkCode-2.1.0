@@ -36,6 +36,8 @@ import org.apache.spark.util.Utils
  * at the top of the logical query plan.
  */
 case class ReturnAnswer(child: LogicalPlan) extends UnaryNode {
+// 调用 take() 或者 collect() 这一类的算子的时候，会生成这个
+// 输出属性 和 孩子的保持一致
   override def output: Seq[Attribute] = child.output
 }
 
@@ -51,6 +53,10 @@ case class Project(projectList: Seq[NamedExpression], child: LogicalPlan) extend
       }.nonEmpty
     )
 
+    // 首先，Project 自己的 expressions 都要 resolved
+    // 然后，孩子也要都 resolved
+    // 最后，Project 中的 expression 不得有上述三类特殊表达式
+    // 其实对于 最后一种情况不是很理解？？？？？？
     !expressions.exists(!_.resolved) && childrenResolved && !hasSpecialExpressions
   }
 
@@ -81,6 +87,7 @@ case class Generate(
     generatorOutput: Seq[Attribute],
     child: LogicalPlan)
   extends UnaryNode {
+  // 这个 LogicalPlan 没有细看？？？？？？
 
   /** The set of all attributes produced by this node. */
   def generatedSet: AttributeSet = AttributeSet(generatorOutput)
@@ -111,6 +118,8 @@ case class Filter(condition: Expression, child: LogicalPlan)
   override def maxRows: Option[Long] = child.maxRows
 
   override protected def validConstraints: Set[Expression] = {
+  // 这里传入的参数是 filter 使用的表达式 condition
+  // 然后构造基于 condition 的限定条件，和之前的children 限定条件合并在一起使用
     val predicates = splitConjunctivePredicates(condition)
       .filterNot(SubqueryExpression.hasCorrelatedSubquery)
     child.constraints.union(predicates.toSet)
@@ -341,6 +350,7 @@ case class Join(
  * A hint for the optimizer that we should broadcast the `child` if used in a join operator.
  */
 case class BroadcastHint(child: LogicalPlan) extends UnaryNode {
+// 用来优化的一个算子
   override def output: Seq[Attribute] = child.output
 
   // set isBroadcastable to true so the child will be broadcasted
@@ -405,6 +415,7 @@ case class InsertIntoTable(
  *                     Each CTE can see the base tables and the previously defined CTEs only.
  */
 case class With(child: LogicalPlan, cteRelations: Seq[(String, SubqueryAlias)]) extends UnaryNode {
+ // 这个也没有看
   override def output: Seq[Attribute] = child.output
 
   override def simpleString: String = {
@@ -453,6 +464,7 @@ case class Range(
     numSlices: Option[Int],
     output: Seq[Attribute])
   extends LeafNode with MultiInstanceRelation {
+  //
 
   require(step != 0, s"step ($step) cannot be 0")
 
@@ -783,6 +795,7 @@ case class Repartition(numPartitions: Int, shuffle: Boolean, child: LogicalPlan)
  * A relation with one row. This is used in "SELECT ..." without a from clause.
  */
 case object OneRowRelation extends LeafNode {
+//
   override def maxRows: Option[Long] = Some(1)
   override def output: Seq[Attribute] = Nil
 

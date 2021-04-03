@@ -344,6 +344,104 @@ abstract class LogicalPlan extends QueryPlan[LogicalPlan] with Logging {
 // UnaryNode 有一个 子LogicalPlan
 
 // BinaryNode 有左右两个 子LogicalPlan
+
+
+
+// LeafNode 类型的 LogicalPlan
+    // org.apache.spark.sql.catalyst.analysis
+        // UnresolvedRelation
+        // UnresolvedInlineTable
+        // UnresolvedTableValuedFunction
+    // org.apache.spark.sql.hive
+        // MetastoreRelation
+    // org.apache.spark.sql.catalyst.catalog
+        // SimpleCatalogRelation
+    // org.apache.spark.sql.execution
+        // LogicalRDD
+        // ExternalRDD
+    // org.apache.spark.sql.catalyst.plans.logical
+        // Range
+        // OneRowRelation，没有 from 的 select 语句，relation 会对应到这个
+        // LocalRelation
+        // Command，这是一个trait
+    // org.apache.spark.sql.execution.datasources
+        // RunnableCommand，也是一个 trait，继承自 Command
+        // 然后这个 package 下面的命令都是继承并实现了 RunnableCommand，不一一列举
+    // org.apache.spark.sql.execution.datasources
+        // 这个 package 下面还有若干 case class，也是 继承了 LeafNode 或者 RunnableCommand
+    // org.apache.spark.sql.execution.streaming
+        // MemoryPlan
+        // StreamingExecutionRelation
+        // StreamingRelation
+    // org.apache.spark.sql.execution.columnar
+        // InMemoryRelation
+    // org.apache.spark.sql.hive.execution
+        // CreateHiveTableAsSelectCommand，继承自 RunnableCommand
+    // org.apache.spark.sql.catalyst
+        // SQLTable
+
+
+
+// UnaryNode 类型的 LogicalPlan，主要分成4大类
+    // 定义重新分区
+        // RedistributeData，一个 abstract class，有两个子类，都是 case class
+            // SortPartitions
+            // RepartitionByExpression
+    // 脚本转换的相关操作
+        // ScriptTransformation，使用特定的脚本对输入的数据进行转换
+    // Object 相关的操作
+        // DeserializeToObject
+        // TypedFilter
+        // AppendColumns
+        // MapGroups
+        // FlatMapGroupsInR
+        // ObjectConsumer，这还是一个 trait
+            // SerializeFromObject
+            // MapPartitions
+            // MapPartitionsInR
+            // MapElements
+            // AppendColumnsWithObject
+    // 基本操作算子，Basic Logical Operators，
+    // 基本操作算子算是最重要的一部分吧
+    // 全部来自 org/apache/spark/sql/catalyst/plans/logical/basicLogicalOperators.scala
+        // ReturnAnswer
+        // Project
+        // Generate
+        // Filter
+        // BroadcastHint
+        // With
+        // WithWindowDefinition
+        // Sort
+        // Aggregate
+        // Window
+        // Expand
+        // GroupingSets
+        // Pivot
+        // Limit
+        // GlobalLimit
+        // LocalLimit
+        // SubqueryAlias
+        // Sample
+        // Distinct
+        // Repartition
+
+
+// BinaryNode 类型的 LogicalPlan
+    // Join，最复杂也最重要！！！！！！！！！！！！！！！！！！！！！！！！！！！
+    // CoGroup
+    // SetOperation，集合操作
+        // Except
+        // Intersect
+
+
+// 除此之外，还有几个直接继承自 LogicalPlan 的算子
+    // ObjectProducer，是一个trait，用于产生只包含Object列的行数据
+    // EventTimeWatermark，针对Spark Streaming 中 watermark 机制，SparkSQL 用的很少
+    // Union
+
+
+
+
 abstract class LeafNode extends LogicalPlan {
   override final def children: Seq[LogicalPlan] = Nil
   override def producedAttributes: AttributeSet = outputSet

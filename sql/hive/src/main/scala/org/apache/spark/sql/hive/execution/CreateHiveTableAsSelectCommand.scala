@@ -39,6 +39,7 @@ case class CreateHiveTableAsSelectCommand(
     query: LogicalPlan,
     ignoreIfExists: Boolean)
   extends RunnableCommand {
+  //
 
   private val tableIdentifier = tableDesc.identifier
 

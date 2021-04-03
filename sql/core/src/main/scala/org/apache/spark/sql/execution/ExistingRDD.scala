@@ -80,6 +80,8 @@ case class ExternalRDD[T](
     outputObjAttr: Attribute,
     rdd: RDD[T])(session: SparkSession)
   extends LeafNode with ObjectProducer with MultiInstanceRelation {
+  //
+
 
   override protected final def otherCopyArgs: Seq[AnyRef] = session :: Nil
 
@@ -134,6 +136,7 @@ case class LogicalRDD(
     outputPartitioning: Partitioning = UnknownPartitioning(0),
     outputOrdering: Seq[SortOrder] = Nil)(session: SparkSession)
   extends LeafNode with MultiInstanceRelation {
+  //
 
   override protected final def otherCopyArgs: Seq[AnyRef] = session :: Nil
 

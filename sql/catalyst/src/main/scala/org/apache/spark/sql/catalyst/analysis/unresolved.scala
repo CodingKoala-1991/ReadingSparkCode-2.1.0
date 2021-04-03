@@ -43,6 +43,7 @@ case class UnresolvedRelation(
 // alias：表的别名
     tableIdentifier: TableIdentifier,
     alias: Option[String] = None) extends LeafNode {
+    //
 
   /** Returns a `.` separated name for this relation. */
   def tableName: String = tableIdentifier.unquotedString
@@ -61,8 +62,9 @@ case class UnresolvedRelation(
  */
 case class UnresolvedInlineTable(
     names: Seq[String],
-    rows: Seq[Seq[Expression]])
+    rows: Seq[Seq[Expression]])  // 构造的时候需要多个 Expression
   extends LeafNode {
+  //
 
   lazy val expressionsResolved: Boolean = rows.forall(_.forall(_.resolved))
   override lazy val resolved = false
@@ -77,6 +79,7 @@ case class UnresolvedInlineTable(
  */
 case class UnresolvedTableValuedFunction(functionName: String, functionArgs: Seq[Expression])
   extends LeafNode {
+  //
 
   override def output: Seq[Attribute] = Nil
 

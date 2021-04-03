@@ -40,6 +40,7 @@ object StreamingRelation {
  */
 case class StreamingRelation(dataSource: DataSource, sourceName: String, output: Seq[Attribute])
   extends LeafNode {
+  //
   override def isStreaming: Boolean = true
   override def toString: String = sourceName
 }
@@ -49,6 +50,7 @@ case class StreamingRelation(dataSource: DataSource, sourceName: String, output:
  * [[org.apache.spark.sql.catalyst.plans.logical.LogicalPlan]].
  */
 case class StreamingExecutionRelation(source: Source, output: Seq[Attribute]) extends LeafNode {
+//
   override def isStreaming: Boolean = true
   override def toString: String = source.toString
 }
