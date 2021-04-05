@@ -274,7 +274,13 @@ case class Join(
     joinType: JoinType,
     condition: Option[Expression])
   extends BinaryNode with PredicateHelper {
+  // 4个 参数
+  // left 的 LogicalPlan
+  // right 的 LogicalPlan
+  // join 的类型
+  // join 的表达式
 
+  // 不同 join 的类型 ，output 都不一样
   override def output: Seq[Attribute] = {
     joinType match {
       case j: ExistenceJoin =>
@@ -390,14 +396,14 @@ case class OverwriteOptions(
  * @param ifNotExists If true, only write if the table or partition does not exist.
  */
 case class InsertIntoTable(
-    table: LogicalPlan,
+    table: LogicalPlan,  // 要插入的表，最开始是 UnresolvedRelation
     partition: Map[String, Option[String]],
-    child: LogicalPlan,
+    child: LogicalPlan,  // 就是执行执行了一大堆操作之后，最后insert，那么之前一大堆操作（query）就是一个LogicalPlan
     overwrite: OverwriteOptions,
     ifNotExists: Boolean)
   extends LogicalPlan {
 
-  override def children: Seq[LogicalPlan] = child :: Nil
+  override def children: Seq[LogicalPlan] = child :: Nil  // 尽管只有一个 child，还是要转成 list
   override def output: Seq[Attribute] = Seq.empty
 
   assert(overwrite.enabled || !ifNotExists)
@@ -415,7 +421,9 @@ case class InsertIntoTable(
  *                     Each CTE can see the base tables and the previously defined CTEs only.
  */
 case class With(child: LogicalPlan, cteRelations: Seq[(String, SubqueryAlias)]) extends UnaryNode {
- // 这个也没有看
+  // 参数解析
+  // child 就是真正要执行的增删改查的 query
+  // cteRelations 是一个 list，list 的每一个元素又是一个 tuple，key 就是 with 语句中的table 名称，value 就是 with语句对应的 LogicalPlan
   override def output: Seq[Attribute] = child.output
 
   override def simpleString: String = {
@@ -423,6 +431,7 @@ case class With(child: LogicalPlan, cteRelations: Seq[(String, SubqueryAlias)]) 
     s"CTE $cteAliases"
   }
 
+  // 依赖的 CTES 的 LogicalPlan
   override def innerChildren: Seq[LogicalPlan] = cteRelations.map(_._2)
 }
 

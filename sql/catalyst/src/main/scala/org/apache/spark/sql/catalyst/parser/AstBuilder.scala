@@ -62,42 +62,104 @@ class AstBuilder extends SqlBaseBaseVisitor[AnyRef] with Logging {
     }
   }
 
+
   override def visitSingleStatement(ctx: SingleStatementContext): LogicalPlan = withOrigin(ctx) {
+    // ctx 代表 SingleStatementContext 这个 object
+    // 然后 statement 是这个 SingleStatementContext 的一个方法
+    // 在构造AST之后，AST 之中的每一个节点都是一个 Context
+    // 在这里，statement 是 singleStatement 的子语法规则，通过 statement() 方法就可以返回
+    // SingleStatementContext 的孩子之一 StatementContext 对象
+    // 然后扔到 visit 方法里，继续递归访问
+
+    // 每一个 语法规则 以及 规则的分支 都会对应一个 Context
+    // 但是在每一个 Context 内部的方法中，只有语法规则才有相应的方法，分支没有
+
+    // 例如 singleStatement 这个语法规则，statement语法规则 是他的一部分，因此 SingleStatementContext 内部存在 public StatementContext statement() 方法
+    // statement语法规则 的分支 #explain，也包含 statement语法规则，因此 ExplainContext 内部也有 public StatementContext statement() 方法
+    // 但是 context 内部都不存在 explain() 方法，因为 #explain 只是一个分支
+
+    // 在 visitor 中，每一个语法规则 或者 分支 都有自己的 visitXXX 方法
+
+    // 这种比较高level 的context 都是直接访问孩子，继续向下的
     visit(ctx.statement).asInstanceOf[LogicalPlan]
   }
 
   override def visitSingleExpression(ctx: SingleExpressionContext): Expression = withOrigin(ctx) {
+  // 入口之一？
     visitNamedExpression(ctx.namedExpression)
   }
 
   override def visitSingleTableIdentifier(
       ctx: SingleTableIdentifierContext): TableIdentifier = withOrigin(ctx) {
+    // 入口之一？
     visitTableIdentifier(ctx.tableIdentifier)
   }
 
   override def visitSingleDataType(ctx: SingleDataTypeContext): DataType = withOrigin(ctx) {
+    // 入口之一？
     visit(ctx.dataType).asInstanceOf[DataType]
   }
 
   /* ********************************************************************************************
    * Plan parsing
    * ******************************************************************************************** */
+   // 接受一个 Context 对象，构建以这个 Context 为 root 的 LogicalPlan Tree
+   // 类似的还有一个   protected def expression(ctx: ParserRuleContext): Expression = typedVisit(ctx)
+   // 行面说这个是用来生成 expression 的
+   // 因为给定一个AST，可能返回 LogicalPlan tree 也可能返回 Expression tree
   protected def plan(tree: ParserRuleContext): LogicalPlan = typedVisit(tree)
 
   /**
    * Create a top-level plan with Common Table Expressions.
    */
+  // AstBuilder 继承了 SqlBaseBaseVisitor
+  // 但是并没有重载 visitStatementDefault
+  // 直接从 visitQuery 开始继承
+  // visitQuery 对应的语法规则
+  // query
+  //    : ctes? queryNoWith
+  //    ;
+  // 其中 ctes 是可选部分，CTE 的意思是 公用表达式
+  // ctes
+  //    : WITH namedQuery (',' namedQuery)*
+  //    ;
+  //
+  // namedQuery
+  //    : name=identifier AS? '(' query ')'
+
+  // queryNoWith 最终对应两个分支：singleInsertQuery 和 multiInsertQuery
+  // queryNoWith
+  //    : insertInto? queryTerm queryOrganization                                              #singleInsertQuery
+  //    | fromClause multiInsertQueryBody+                                                     #multiInsertQuery
+  //    ;
+
+  // with 语句的样例
+  // WITH table_1 AS (
+  // SELECT GENERATE_SERIES('2012-06-29', '2012-07-03', '1 day'::INTERVAL) AS date
+  // )
+  // WITH table_2 AS (
+  // SELECT GENERATE_SERIES('2012-06-30', '2012-07-13', '1 day'::INTERVAL) AS date
+  // )
+  // SELECT * FROM table_1
+  // WHERE date IN table_2
+  // WITH 语句就是把一些query，命名成特定名称，后续可以反复使用
   override def visitQuery(ctx: QueryContext): LogicalPlan = withOrigin(ctx) {
+    // queryNoWith 就是说 sql 语句中没有 with 语句
     val query = plan(ctx.queryNoWith)
 
     // Apply CTEs
+    // g4 文件中，CTES 部分是可选的（带问号？），所以这里是 optional
     query.optional(ctx.ctes) {
+      // ctx.ctes.namedQuery 返回的是一个 List<NamedQueryContext>
       val ctes = ctx.ctes.namedQuery.asScala.map { nCtx =>
         val namedQuery = visitNamedQuery(nCtx)
+        // 用 with 语句的 table 名作为 alias，也就是key
         (namedQuery.alias, namedQuery)
       }
       // Check for duplicate names.
       checkDuplicateKeys(ctes, ctx)
+      // 最终 ctes 是一个 Map，key 是with 里的 table 名，value 是对应的 namedQuery（LogicalPlan）
+      // 然后 构建 With 这个LogicalPlan
       With(query, ctes)
     }
   }
@@ -107,6 +169,7 @@ class AstBuilder extends SqlBaseBaseVisitor[AnyRef] with Logging {
    *
    * This is only used for Common Table Expressions.
    */
+  // 构建一个 SubqueryAlias 的 LogicalPlan
   override def visitNamedQuery(ctx: NamedQueryContext): SubqueryAlias = withOrigin(ctx) {
     SubqueryAlias(ctx.name.getText, plan(ctx.query), None)
   }
@@ -154,12 +217,25 @@ class AstBuilder extends SqlBaseBaseVisitor[AnyRef] with Logging {
   /**
    * Create a logical plan for a regular (single-insert) query.
    */
+  // queryNoWith 的分支之一 singleInsertQuery
+  // 对应的语法规则
+  // queryNoWith
+  //    : insertInto? queryTerm queryOrganization                                              #singleInsertQuery
+  //    | fromClause multiInsertQueryBody+                                                     #multiInsertQuery
+  //    ;
   override def visitSingleInsertQuery(
       ctx: SingleInsertQueryContext): LogicalPlan = withOrigin(ctx) {
+    // 先构建 基于 queryTerm 的 LogicalPlan
     plan(ctx.queryTerm).
+      // optionalMap 的功能就是 把一个 LogicalPlan 转化成另一类 LogicalPlan
       // Add organization statements.
+      // organization statements 说的是 ORDER BY/SORT BY/CLUSTER BY/DISTRIBUTE BY/LIMIT/WINDOWS 这一类的操作
+      // 这些操作基于 plan(ctx.queryTerm) 返回的 LogicalPlan 去执行的
       optionalMap(ctx.queryOrganization)(withQueryResultClauses).
       // Add insert.
+      //  ctx.insertInto() 返回的是 一个 InsertIntoContext 对象
+      // withInsertInto 又是一个内部方法
+      // insert 如果有的话，肯定是最后执行的plan
       optionalMap(ctx.insertInto())(withInsertInto)
   }
 
@@ -169,6 +245,12 @@ class AstBuilder extends SqlBaseBaseVisitor[AnyRef] with Logging {
   private def withInsertInto(
       ctx: InsertIntoContext,
       query: LogicalPlan): LogicalPlan = withOrigin(ctx) {
+      // 结合上下文，看方法
+      // ctx 是 InsertIntoContext 对象
+      // query 是一个 LogicalPlan，是 visitSingleInsertQuery 里 plan(ctx.queryTerm) 方法生成的 LogicalPlan
+
+    // 从   ctx 中获取 table name 和 partition keys
+    // 还有是否 overwrite 这些
     val tableIdent = visitTableIdentifier(ctx.tableIdentifier)
     val partitionKeys = Option(ctx.partitionSpec).map(visitPartitionSpec).getOrElse(Map.empty)
 
@@ -180,7 +262,7 @@ class AstBuilder extends SqlBaseBaseVisitor[AnyRef] with Logging {
     val overwrite = ctx.OVERWRITE != null
     val staticPartitionKeys: Map[String, String] =
       partitionKeys.filter(_._2.nonEmpty).map(t => (t._1, t._2.get))
-
+    // 也就是说，如果 insertInto 不是空，最终     plan(ctx.queryTerm) 生成的 LogicalPlan 会被转换成 InsertIntoTable 的LogicalPlan
     InsertIntoTable(
       UnresolvedRelation(tableIdent, None),
       partitionKeys,
@@ -230,21 +312,51 @@ class AstBuilder extends SqlBaseBaseVisitor[AnyRef] with Logging {
    * Add ORDER BY/SORT BY/CLUSTER BY/DISTRIBUTE BY/LIMIT/WINDOWS clauses to the logical plan. These
    * clauses determine the shape (ordering/partitioning/rows) of the query result.
    */
+  // 比如 select * from table1 order by id desc；
+  // 在这里 query，就是 select * from table1 对应的 LogicalPlan
+  // QueryOrganizationContext 对应的是 后面 order 的这一部分
   private def withQueryResultClauses(
       ctx: QueryOrganizationContext,
       query: LogicalPlan): LogicalPlan = withOrigin(ctx) {
     import ctx._
 
     // Handle ORDER BY, SORT BY, DISTRIBUTE BY, and CLUSTER BY clause.
+    // 在 g4 文法中，相应的语法规则为：
+    // queryOrganization
+    //    : (ORDER BY order+=sortItem (',' order+=sortItem)*)?
+    //      (CLUSTER BY clusterBy+=expression (',' clusterBy+=expression)*)?
+    //      (DISTRIBUTE BY distributeBy+=expression (',' distributeBy+=expression)*)?
+    //      (SORT BY sort+=sortItem (',' sort+=sortItem)*)?
+    //      windows?
+    //      (LIMIT limit=expression)?
+    //    ;
+    // 使用了 += ，因此在 ANTLR4 生成的 Context 中，如果 sql 语句中有 order by，那么对应的 order 字段必然不空
+    // 所以下面使用 字段判空的方式，来看是哪一类 QueryOrganizationContext
     val withOrder = if (
       !order.isEmpty && sort.isEmpty && distributeBy.isEmpty && clusterBy.isEmpty) {
       // ORDER BY ...
+      // 构造 Sort 这个 LogicalPlan
+      // order.asScala.map(visitSortItem) 生成的 是 Seq[SortOrder]
+      // SortOrder 又是一个 Expression
+      // 比如 select * from table1 order by id desc；
+      // 在这里 query，就是 select * from table1 对应的 LogicalPlan
       Sort(order.asScala.map(visitSortItem), global = true, query)
     } else if (order.isEmpty && !sort.isEmpty && distributeBy.isEmpty && clusterBy.isEmpty) {
       // SORT BY ...
       Sort(sort.asScala.map(visitSortItem), global = false, query)
     } else if (order.isEmpty && sort.isEmpty && !distributeBy.isEmpty && clusterBy.isEmpty) {
       // DISTRIBUTE BY ...
+      // DISTRIBUTE BY 根据给定的字段list，进行分区输出，但是每一个分区内的数据是无序的
+      // 这里说明一下 expressionList 这个方法
+      //   private def expressionList(trees: java.util.List[ExpressionContext]): Seq[Expression] = {
+      //    trees.asScala.map(expression)
+      //  }
+      // 这里的 expression 是说下面的这个方法
+      // protected def expression(ctx: ParserRuleContext): Expression = typedVisit(ctx)
+      // 即对每一个 Context 都调用 expression方法，生成 Expression 对象
+      // 参数是一个 distributeBy，其实就是 List<ExpressionContext> 类型
+      // expressionList 然后就是把 这个 List<ExpressionContext> 类型的对象遍历一遍
+      // 把每一个 ExpressionContext 类型对象的 expressions 返回，生成一个list
       RepartitionByExpression(expressionList(distributeBy), query)
     } else if (order.isEmpty && !sort.isEmpty && !distributeBy.isEmpty && clusterBy.isEmpty) {
       // SORT BY ... DISTRIBUTE BY ...
@@ -254,6 +366,7 @@ class AstBuilder extends SqlBaseBaseVisitor[AnyRef] with Logging {
         RepartitionByExpression(expressionList(distributeBy), query))
     } else if (order.isEmpty && sort.isEmpty && distributeBy.isEmpty && !clusterBy.isEmpty) {
       // CLUSTER BY ...
+      // CLUSTER BY 也是 根据 给定的字段list，进行分区输出，但是每一个分区内的数据是有序的，这点和 DISTRIBUTE BY 不一样
       val expressions = expressionList(clusterBy)
       Sort(
         expressions.map(SortOrder(_, Ascending)),
@@ -272,6 +385,8 @@ class AstBuilder extends SqlBaseBaseVisitor[AnyRef] with Logging {
 
     // LIMIT
     withWindow.optional(limit) {
+      // 如果有limit 就生成Limit LogicalPlan，其实就是在 原来的 LogicalPlan 基础上加了一个 父节点，这个就是 optional 这个方法的作用
+      // typedVisit(limit) 生成 limit 对应的 Expression
       Limit(typedVisit(limit), withWindow)
     }
   }
@@ -546,7 +661,14 @@ class AstBuilder extends SqlBaseBaseVisitor[AnyRef] with Logging {
    *   select * from t1 join (t2 cross join t3) on col1 = col2
    * }}}
    */
+   // 样例如上
+   // 匹配的规则
+   // relation
+   //    : relationPrimary joinRelation*
+   //    ;
   override def visitRelation(ctx: RelationContext): LogicalPlan = withOrigin(ctx) {
+    // RelationContext 的 object 可能有多个 子 context，有 1个 RelationPrimaryContext 和 若干个 JoinRelationContext
+    // 这里 plan(ctx.relationPrimary)，就是先递归调用，把 RelationContext 这个context 转为 LogicalPlan
     withJoinRelations(plan(ctx.relationPrimary), ctx)
   }
 
@@ -554,8 +676,16 @@ class AstBuilder extends SqlBaseBaseVisitor[AnyRef] with Logging {
    * Join one more [[LogicalPlan]]s to the current logical plan.
    */
   private def withJoinRelations(base: LogicalPlan, ctx: RelationContext): LogicalPlan = {
+  // 上面分析过，ctx.joinRelation 返回的是若干个 JoinRelationContext
+  // 然后用 foldLeft ，依次和 base 这个 LogicalPlan 进行叠加，返回最终的 LogicalPlan
+  // left 就是 一个 LogicalPlan，初始化为 base
+  // join 是一个 JoinRelationContext 对象
     ctx.joinRelation.asScala.foldLeft(base) { (left, join) =>
       withOrigin(join) {
+        // join.joinType 就是 JoinRelationContext 对象调用自身的 joinType() 获取 JoinTypeContext
+        // 然后 case 里头的 jt 其实就是 JoinTypeContext 对象
+        // CROSS() 方法获取的是一个 TerminalNode 对象，已经分析到叶子了
+        // 具体 joinType 的定义在 org/apache/spark/sql/catalyst/plans/joinTypes.scala
         val baseJoinType = join.joinType match {
           case null => Inner
           case jt if jt.CROSS != null => Cross
@@ -568,10 +698,20 @@ class AstBuilder extends SqlBaseBaseVisitor[AnyRef] with Logging {
         }
 
         // Resolve the join type and join condition
+        // joinCriteria 是指 ON 或者 USING 后面的那一部分
         val (joinType, condition) = Option(join.joinCriteria) match {
           case Some(c) if c.USING != null =>
+            // 例如 USING(a, b, c)
+            // A表是 (a,b,c,d)
+            // B表是 (a,b,c,e)
+            // using join 的结果就是(a,b,c,d,e)
+            // 普通join 的诶结果是 (a,b,c,d,a,b,c,e)
+            // c.identifier 重的 c 是 JoinCriteriaContext 对象
+            // USING 这个情况下，expression 为 None
             (UsingJoin(baseJoinType, c.identifier.asScala.map(_.getText)), None)
           case Some(c) if c.booleanExpression != null =>
+            // 带 ON 关键字的 join
+            // 直接调用 expression 方法，传入 BooleanExpressionContext 对象，去构建一个 expression
             (baseJoinType, Option(expression(c.booleanExpression)))
           case None if join.NATURAL != null =>
             if (baseJoinType == Cross) {
@@ -581,6 +721,8 @@ class AstBuilder extends SqlBaseBaseVisitor[AnyRef] with Logging {
           case None =>
             (baseJoinType, None)
         }
+        // 然后新建一个 Join 的 LogicalPlan
+        // 这里 condition 是一个 expression
         Join(left, plan(join.right), joinType, condition)
       }
     }
@@ -757,6 +899,7 @@ class AstBuilder extends SqlBaseBaseVisitor[AnyRef] with Logging {
    * Create an expression from the given context. This method just passes the context on to the
    * visitor and only takes care of typing (We assume that the visitor returns an Expression here).
    */
+   // 接受一个 Context，构建以这个 context 为 root 的 expression
   protected def expression(ctx: ParserRuleContext): Expression = typedVisit(ctx)
 
   /**

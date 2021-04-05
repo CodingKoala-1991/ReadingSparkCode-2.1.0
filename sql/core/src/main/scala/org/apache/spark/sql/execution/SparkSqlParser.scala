@@ -49,6 +49,7 @@ class SparkSqlParser(conf: SQLConf) extends AbstractSqlParser {
 /**
  * Builder that converts an ANTLR ParseTree into a LogicalPlan/Expression/TableIdentifier.
  */
+// 继承自 AstBuilder，也是一个 visitor
 class SparkSqlAstBuilder(conf: SQLConf) extends AstBuilder {
   import org.apache.spark.sql.catalyst.parser.ParserUtils._
 
@@ -59,6 +60,9 @@ class SparkSqlAstBuilder(conf: SQLConf) extends AstBuilder {
    * key-value pair. The split between key and value is made by searching for the first `=`
    * character in the raw string.
    */
+   // raw 就是 SET 后面的字符串
+   // 然后解析 raw ，根据 = 来拆分 key 和 value
+   // 然后构建 SetCommand 的 LogicalPlan
   override def visitSetConfiguration(ctx: SetConfigurationContext): LogicalPlan = withOrigin(ctx) {
     // Construct the command.
     val raw = remainder(ctx.SET.getSymbol)
@@ -81,6 +85,7 @@ class SparkSqlAstBuilder(conf: SQLConf) extends AstBuilder {
    *   RESET;
    * }}}
    */
+   // 直接就是构建 ResetCommand
   override def visitResetConfiguration(
       ctx: ResetConfigurationContext): LogicalPlan = withOrigin(ctx) {
     ResetCommand
@@ -97,6 +102,8 @@ class SparkSqlAstBuilder(conf: SQLConf) extends AstBuilder {
    *   ANALYZE TABLE table COMPUTE STATISTICS FOR COLUMNS column1, column2;
    * }}}
    */
+   // 最终会生成两种 LogicalPlan 之一，AnalyzeTableCommand 或者 AnalyzeColumnCommand
+   // 基本就是根据根据g4文件中的规则去生成
   override def visitAnalyze(ctx: AnalyzeContext): LogicalPlan = withOrigin(ctx) {
     if (ctx.partitionSpec != null) {
       logWarning(s"Partition specification is ignored: ${ctx.partitionSpec.getText}")
@@ -118,6 +125,10 @@ class SparkSqlAstBuilder(conf: SQLConf) extends AstBuilder {
   /**
    * Create a [[SetDatabaseCommand]] logical plan.
    */
+   // 语法规则如下
+   // USE db=identifier #use
+   // 因此 db 是一个变量，或者这个变量值
+   // 然后生成 SetDatabaseCommand 这个 LogicalPlan
   override def visitUse(ctx: UseContext): LogicalPlan = withOrigin(ctx) {
     SetDatabaseCommand(ctx.db.getText)
   }
@@ -129,6 +140,7 @@ class SparkSqlAstBuilder(conf: SQLConf) extends AstBuilder {
    *   SHOW TABLES [(IN|FROM) database_name] [[LIKE] 'identifier_with_wildcards'];
    * }}}
    */
+   //
   override def visitShowTables(ctx: ShowTablesContext): LogicalPlan = withOrigin(ctx) {
     ShowTablesCommand(
       Option(ctx.db).map(_.getText),
@@ -142,6 +154,7 @@ class SparkSqlAstBuilder(conf: SQLConf) extends AstBuilder {
    *   SHOW (DATABASES|SCHEMAS) [LIKE 'identifier_with_wildcards'];
    * }}}
    */
+   //
   override def visitShowDatabases(ctx: ShowDatabasesContext): LogicalPlan = withOrigin(ctx) {
     ShowDatabasesCommand(Option(ctx.pattern).map(string))
   }
@@ -155,6 +168,7 @@ class SparkSqlAstBuilder(conf: SQLConf) extends AstBuilder {
    *   SHOW TBLPROPERTIES table_name[('propertyKey')];
    * }}}
    */
+   //
   override def visitShowTblProperties(
       ctx: ShowTblPropertiesContext): LogicalPlan = withOrigin(ctx) {
     ShowTablePropertiesCommand(
@@ -171,6 +185,7 @@ class SparkSqlAstBuilder(conf: SQLConf) extends AstBuilder {
    *   SHOW COLUMNS (FROM | IN) table_identifier [(FROM | IN) database];
    * }}}
    */
+   //
   override def visitShowColumns(ctx: ShowColumnsContext): LogicalPlan = withOrigin(ctx) {
     ShowColumnsCommand(Option(ctx.db).map(_.getText), visitTableIdentifier(ctx.tableIdentifier))
   }
@@ -186,6 +201,7 @@ class SparkSqlAstBuilder(conf: SQLConf) extends AstBuilder {
    *   SHOW PARTITIONS table_identifier [partition_spec];
    * }}}
    */
+   //
   override def visitShowPartitions(ctx: ShowPartitionsContext): LogicalPlan = withOrigin(ctx) {
     val table = visitTableIdentifier(ctx.tableIdentifier)
     val partitionKeys = Option(ctx.partitionSpec).map(visitNonOptionalPartitionSpec)
@@ -195,6 +211,7 @@ class SparkSqlAstBuilder(conf: SQLConf) extends AstBuilder {
   /**
    * Creates a [[ShowCreateTableCommand]]
    */
+   //
   override def visitShowCreateTable(ctx: ShowCreateTableContext): LogicalPlan = withOrigin(ctx) {
     val table = visitTableIdentifier(ctx.tableIdentifier())
     ShowCreateTableCommand(table)
@@ -203,6 +220,7 @@ class SparkSqlAstBuilder(conf: SQLConf) extends AstBuilder {
   /**
    * Create a [[RefreshTable]] logical plan.
    */
+   //
   override def visitRefreshTable(ctx: RefreshTableContext): LogicalPlan = withOrigin(ctx) {
     RefreshTable(visitTableIdentifier(ctx.tableIdentifier))
   }
@@ -210,6 +228,7 @@ class SparkSqlAstBuilder(conf: SQLConf) extends AstBuilder {
   /**
    * Create a [[RefreshTable]] logical plan.
    */
+   //
   override def visitRefreshResource(ctx: RefreshResourceContext): LogicalPlan = withOrigin(ctx) {
     val resourcePath = remainder(ctx.REFRESH.getSymbol).trim
     RefreshResource(resourcePath)
@@ -218,6 +237,7 @@ class SparkSqlAstBuilder(conf: SQLConf) extends AstBuilder {
   /**
    * Create a [[CacheTableCommand]] logical plan.
    */
+   //
   override def visitCacheTable(ctx: CacheTableContext): LogicalPlan = withOrigin(ctx) {
     val query = Option(ctx.query).map(plan)
     val tableIdent = visitTableIdentifier(ctx.tableIdentifier)
@@ -232,6 +252,7 @@ class SparkSqlAstBuilder(conf: SQLConf) extends AstBuilder {
   /**
    * Create an [[UncacheTableCommand]] logical plan.
    */
+   //
   override def visitUncacheTable(ctx: UncacheTableContext): LogicalPlan = withOrigin(ctx) {
     UncacheTableCommand(visitTableIdentifier(ctx.tableIdentifier), ctx.EXISTS != null)
   }
@@ -239,6 +260,7 @@ class SparkSqlAstBuilder(conf: SQLConf) extends AstBuilder {
   /**
    * Create a [[ClearCacheCommand]] logical plan.
    */
+   //
   override def visitClearCache(ctx: ClearCacheContext): LogicalPlan = withOrigin(ctx) {
     ClearCacheCommand
   }

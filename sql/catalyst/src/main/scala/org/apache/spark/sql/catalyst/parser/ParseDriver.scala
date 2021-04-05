@@ -50,7 +50,15 @@ abstract class AbstractSqlParser extends ParserInterface with Logging {
   }
 
   /** Creates LogicalPlan for a given SQL string. */
+  // 传入一个 sqlText 语句，然后将其解析成 LogicalPlan
+  // parse 是一个 柯里化 函数
+  // 因此这里在调用的时候，会传入两个参数
+  // 参数1：sqlText 要执行的 sql 语句
+  // 参数2：后面那一大坨 {} 包住的语句，就是一个方法，入参parser
   override def parsePlan(sqlText: String): LogicalPlan = parse(sqlText) { parser =>
+  // astBuilder 是自己实现的 visitor，但是入口也是 visitSingleStatement
+  // parser.singleStatement()，基于要执行的sql语句生成一个 AST，返回的就是这棵AST 的 root Context
+  // astBuilder.visitSingleStatement(root Context)，传入 AST 的 root Context，就开始构造 LogicalPlan 的 Tree
     astBuilder.visitSingleStatement(parser.singleStatement()) match {
       case plan: LogicalPlan => plan
       case _ =>
@@ -62,9 +70,14 @@ abstract class AbstractSqlParser extends ParserInterface with Logging {
   /** Get the builder (visitor) which converts a ParseTree into an AST. */
   protected def astBuilder: AstBuilder
 
+  // parse 是一个 柯里化 函数，接受两个参数
+  // 参数1：command，就是具体的sql语句
+  // 参数2：toResult，一个方法，方法的格式是 SqlBaseParser => T
   protected def parse[T](command: String)(toResult: SqlBaseParser => T): T = {
     logInfo(s"Parsing command: $command")
 
+// 下面这一大坨，就是调用 ANTLR4 的方法
+// 创建 token 流，语法分析之类的
     val lexer = new SqlBaseLexer(new ANTLRNoCaseStringStream(command))
     lexer.removeErrorListeners()
     lexer.addErrorListener(ParseErrorListener)
@@ -79,6 +92,10 @@ abstract class AbstractSqlParser extends ParserInterface with Logging {
       try {
         // first, try parsing with potentially faster SLL mode
         parser.getInterpreter.setPredictionMode(PredictionMode.SLL)
+        // 核心的是这一句，实际执行的就是 astBuilder.visitSingleStatement(parser.singleStatement())
+        // parser 是 ANTLR4 生成的 parser，singleStatement() 方法 就是基于sql语句生成一棵 AST，返回 这棵AST 的 root Context
+        // 然后 这个 root Context，交给 astBuilder.visitSingleStatement(root Context)
+        // astBuilder 是 Spark SQL 自己实现的 visitor，从 root Context 开始遍历 这棵 AST
         toResult(parser)
       }
       catch {
@@ -108,6 +125,7 @@ abstract class AbstractSqlParser extends ParserInterface with Logging {
  * Concrete SQL parser for Catalyst-only SQL statements.
  */
 object CatalystSqlParser extends AbstractSqlParser {
+  // 实际执行 parse 工作的 Object
   val astBuilder = new AstBuilder
 }
 

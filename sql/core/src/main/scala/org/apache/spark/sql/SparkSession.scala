@@ -588,7 +588,15 @@ class SparkSession private(
    *
    * @since 2.0.0
    */
+   // 通过 SparkSession 的 Object
+   // 然后调用 sql 方法，传入 sql 语句，就可以执行
+   // 因此，这个是 通过 SparkSession 开始调用 sql 的入口方法
+   // sqlText 就是需要执行的 sql 语句
+   // SparkSession 会持有 一个 sqlParser，最终调用 sqlParser 中的 parsePlan 方法
   def sql(sqlText: String): DataFrame = {
+
+    // sessionState.sqlParser.parsePlan(sqlText 返回了LogicalPlan 的 Tree 的 root，也是一个 LogicalPlan
+    // 然后将 这个 root LogicalPlan 作为参数塞到 ofRows 这个方法里
     Dataset.ofRows(self, sessionState.sqlParser.parsePlan(sqlText))
   }
 

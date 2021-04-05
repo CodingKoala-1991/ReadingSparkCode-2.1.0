@@ -441,6 +441,20 @@ abstract class LogicalPlan extends QueryPlan[LogicalPlan] with Logging {
 
 
 
+// 生成 LogicalPlan 的入口方法
+// org/apache/spark/sql/catalyst/parser/ParseDriver.scala
+// 中的 AbstractSqlParser 的 parsePlan 方法
+// 不过 AbstractSqlParser 是一个 abstract class
+// 实际上是 同一个文件中 的 Object：CatalystSqlParser 来完成实际的 parse 工作
+
+// 在生成 LogicalPlan tree 的过程中
+// SparkSQL 自己实现了两个 visitor，分别是 AstBuilder 和 SparkSqlAstBuilder（继承自AstBuilder）
+// AstBuilder 更多解析的是 增删改查这一类的 sql 语句，所以如果要看转换，这才是真正的重点！！！！！！！！！！！！！！！！！！！！！！！！！！！！！
+// SparkSqlAstBuilder 解析的是 command 这一类的 sql 语句（g4文件中statement这个规则下，除了#statementDefault的其他分支都是command ）
+// 包括 load data 从 AST -> LogicalPlan 的转换也在 SparkSqlAstBuilder 这个 class 里
+// visitor 中的 visit 操作，有可能返回 Expression，也可能返回 LogicalPlan
+
+
 
 abstract class LeafNode extends LogicalPlan {
   override final def children: Seq[LogicalPlan] = Nil
