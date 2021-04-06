@@ -114,6 +114,7 @@ class AstBuilder extends SqlBaseBaseVisitor[AnyRef] with Logging {
    */
   // AstBuilder 继承了 SqlBaseBaseVisitor
   // 但是并没有重载 visitStatementDefault
+  // 也即是说 SqlBaseBaseVisitor 中的方法，AstBuilder 不是每一个都要重载，有一些还是用原来的递归下去的逻辑就行
   // 直接从 visitQuery 开始继承
   // visitQuery 对应的语法规则
   // query
@@ -190,10 +191,30 @@ class AstBuilder extends SqlBaseBaseVisitor[AnyRef] with Logging {
    * }}}
    * This (Hive) feature cannot be combined with set-operators.
    */
+  // 执行多条 insert
+  // queryNoWith
+  //         : insertInto? queryTerm queryOrganization                                              #singleInsertQuery
+  //         | fromClause multiInsertQueryBody+                                                     #multiInsertQuery
+  //         ;
+  //
+  // fromClause
+  //    : FROM relation (',' relation)* lateralView*
+  //    ;
+  //
+  // multiInsertQueryBody
+  //    : insertInto?
+  //      querySpecification
+  //      queryOrganization
+  //    ;
+  //
+  // 从上面语法规则可以看出，fromClause 中可以有多个 relation 或者 view
   override def visitMultiInsertQuery(ctx: MultiInsertQueryContext): LogicalPlan = withOrigin(ctx) {
+  // 这里的 from 我理解 和 select * from 里的from 是一个意思
     val from = visitFromClause(ctx.fromClause)
-
     // Build the insert clauses.
+    // 然后多条 insert 语句的解析就是单条insert 的组合
+    // 因此流程 和 单条的一致
+    // 唯一不同的是，如果真的是有多条，最后用一个 Union 的 LogicalPlan 包住
     val inserts = ctx.multiInsertQueryBody.asScala.map {
       body =>
         validate(body.querySpecification.fromClause == null,
@@ -242,6 +263,7 @@ class AstBuilder extends SqlBaseBaseVisitor[AnyRef] with Logging {
   /**
    * Add an INSERT INTO [TABLE]/INSERT OVERWRITE TABLE operation to the logical plan.
    */
+  // 已经看了
   private def withInsertInto(
       ctx: InsertIntoContext,
       query: LogicalPlan): LogicalPlan = withOrigin(ctx) {
@@ -274,11 +296,13 @@ class AstBuilder extends SqlBaseBaseVisitor[AnyRef] with Logging {
   /**
    * Create a partition specification map.
    */
+   // key 是 partition 的名称
+   // value 是 这个 partition 的
   override def visitPartitionSpec(
       ctx: PartitionSpecContext): Map[String, Option[String]] = withOrigin(ctx) {
     val parts = ctx.partitionVal.asScala.map { pVal =>
-      val name = pVal.identifier.getText
-      val value = Option(pVal.constant).map(visitStringConstant)
+      val name = pVal.identifier.getText  // partition 的名称
+      val value = Option(pVal.constant).map(visitStringConstant)  // partition 的某个具体值
       name -> value
     }
     // Before calling `toMap`, we check duplicated keys to avoid silently ignore partition values
@@ -291,6 +315,8 @@ class AstBuilder extends SqlBaseBaseVisitor[AnyRef] with Logging {
   /**
    * Create a partition specification map without optional values.
    */
+  // 这个visit 不是真的 visitXXXX
+  // 正宗的 visitor 中的 visit 方法都是  override def 的
   protected def visitNonOptionalPartitionSpec(
       ctx: PartitionSpecContext): Map[String, String] = withOrigin(ctx) {
     visitPartitionSpec(ctx).mapValues(_.orNull).map(identity)
@@ -301,6 +327,7 @@ class AstBuilder extends SqlBaseBaseVisitor[AnyRef] with Logging {
    * main purpose is to prevent slight differences due to back to back conversions i.e.:
    * String -> Literal -> String.
    */
+   // 不用细看
   protected def visitStringConstant(ctx: ConstantContext): String = withOrigin(ctx) {
     ctx match {
       case s: StringLiteralContext => createString(s)
@@ -381,6 +408,10 @@ class AstBuilder extends SqlBaseBaseVisitor[AnyRef] with Logging {
     }
 
     // WINDOWS
+    // WINDOW 子句的定义可以参考
+    // http://dcx.sybase.com/1201/zh/dbreference/window-statement.html
+    // 个人感觉有点像 窗口函数 + OVER 的用法
+    // 如果有 window 子句，在 前面的query 的 LogicalPlan 的基础上，套一个 with 对应的 LogicalPlan 的父节点
     val withWindow = withOrder.optionalMap(windows)(withWindows)
 
     // LIMIT
@@ -394,11 +425,37 @@ class AstBuilder extends SqlBaseBaseVisitor[AnyRef] with Logging {
   /**
    * Create a logical plan using a query specification.
    */
+  // 语法规则如下：
+  // querySpecification
+  //    : (((SELECT kind=TRANSFORM '(' namedExpressionSeq ')'
+  //        | kind=MAP namedExpressionSeq
+  //        | kind=REDUCE namedExpressionSeq))
+  //       inRowFormat=rowFormat?
+  //       (RECORDWRITER recordWriter=STRING)?
+  //       USING script=STRING
+  //       (AS (identifierSeq | colTypeList | ('(' (identifierSeq | colTypeList) ')')))?
+  //       outRowFormat=rowFormat?
+  //       (RECORDREADER recordReader=STRING)?
+  //       fromClause?
+  //       (WHERE where=booleanExpression)?)
+  //    | ((kind=SELECT setQuantifier? namedExpressionSeq fromClause?
+  //       | fromClause (kind=SELECT setQuantifier? namedExpressionSeq)?)
+  //       lateralView*
+  //       (WHERE where=booleanExpression)?
+  //       aggregation?
+  //       (HAVING having=booleanExpression)?
+  //       windows?)
+  //    ;
+  // 对应 select 语句的操作
   override def visitQuerySpecification(
       ctx: QuerySpecificationContext): LogicalPlan = withOrigin(ctx) {
+    // 首先解析 from 部分
+    // select 语句如果没有 from 部分，那么就是一个   OneRowRelation
+    // 要么就调用 visitFromClause 得到 from 部分的 LogicalPlan
     val from = OneRowRelation.optional(ctx.fromClause) {
       visitFromClause(ctx.fromClause)
     }
+    // 最后再执行select 和 where 的部分
     withQuerySpecification(ctx, from)
   }
 
@@ -519,12 +576,19 @@ class AstBuilder extends SqlBaseBaseVisitor[AnyRef] with Logging {
    * Create a logical plan for a given 'FROM' clause. Note that we support multiple (comma
    * separated) relations here, these get converted into a single plan by condition-less inner join.
    */
+   // visitFromClause 子句，里面对应的 relation list 和 view list 都要join 起来
   override def visitFromClause(ctx: FromClauseContext): LogicalPlan = withOrigin(ctx) {
     val from = ctx.relation.asScala.foldLeft(null: LogicalPlan) { (left, relation) =>
+      // 这里 relation.relationPrimary 返回一个 RelationPrimaryContext
+      // relation 是一个 Context
+      // 然后生成 LogicalPlan
       val right = plan(relation.relationPrimary)
+      // Join 的 LogicalPlan 不断叠加
       val join = right.optionalMap(left)(Join(_, _, Inner, None))
+      // 最终返回一个 withJoinRelations 的 LogicalPlan
       withJoinRelations(join, relation)
     }
+    // 最后还要叠加 view
     ctx.lateralView.asScala.foldLeft(from)(withGenerate)
   }
 
@@ -569,6 +633,8 @@ class AstBuilder extends SqlBaseBaseVisitor[AnyRef] with Logging {
       ctx: WindowsContext,
       query: LogicalPlan): LogicalPlan = withOrigin(ctx) {
     // Collect all window specifications defined in the WINDOW clause.
+    // 一个 sql 语句中可能有多个 window 子句，因此这里是一个 list
+    // 同时还要构建 map
     val baseWindowMap = ctx.namedWindow.asScala.map {
       wCtx =>
         (wCtx.identifier.getText, typedVisit[WindowSpec](wCtx.windowSpec))
@@ -593,6 +659,7 @@ class AstBuilder extends SqlBaseBaseVisitor[AnyRef] with Logging {
 
     // Note that mapValues creates a view instead of materialized map. We force materialization by
     // mapping over identity.
+    // query 依然是前面的一大坨操作，这里成为了 WithWindowDefinition 这个 LogicalPlan 的 child
     WithWindowDefinition(windowMapView.map(identity), query)
   }
 
@@ -641,11 +708,46 @@ class AstBuilder extends SqlBaseBaseVisitor[AnyRef] with Logging {
   /**
    * Add a [[Generate]] (Lateral View) to a logical plan.
    */
+  // 把  View 转成 LogicalPlan
+  // val df = spark.sql(
+  //      """
+  //        |select
+  //        |insideLayer2.json as a2
+  //        |from (select '{"layer1": {"layer2": "text inside layer 2"}}' json) test
+  //        |lateral view json_tuple(json, 'layer1') insideLayer1 as json
+  //        |lateral view json_tuple(insideLayer1.json, 'layer2') insideLayer2 as json
+  //      """.stripMargin
+  //
+  // lateral view 的样例2
+  // select name, sum(calorie)
+  // from
+  //     (select t1.name
+  //            ,fd
+  //            ,t2.calorie
+  //     from p_food t1 lateral view explode(split(food,'、')) as fd
+  //     left join f_calorie t2 on t1.food = t2.food)
+  // group by name
+  //
+  // lateral view 部分的规则如下：
+  // lateralView
+  //    : LATERAL VIEW (OUTER)? qualifiedName '(' (expression (',' expression)*)? ')' tblName=identifier (AS? colName+=identifier (',' colName+=identifier)*)?
+  //    ;
+  // 依次解释一下
+  // qualifiedName 中文含义是 合格的名字，这里意味着一个UDF，例如行转列的 explode() 或者 样例1中的 json_tuple
+  // 在 qualifiedName 后面紧跟着 (expression, expression...) 这样的形式，其实就是传给 UDF 的 参数 或者 expression，可能有1个，也可能多个
+  // tblName 就是 view 的名称，例如样例1中的 insideLayer1 和 insideLayer2，如果有多个view，在select 的时候，要加上 view 的名称的
+  // 然后 as colName1, colName2...对应着 UDF 返回的每一列的名称
   private def withGenerate(
-      query: LogicalPlan,
+      query: LogicalPlan,  // 现在已经叠加了的 relations 和 views 对应的 LogicalPlan
       ctx: LateralViewContext): LogicalPlan = withOrigin(ctx) {
+      // ctx.expression 返回的是 List<ExpressionContext>
+      // expressionList 传入 List<ExpressionContext>
+      // 返回 List<Expression>
     val expressions = expressionList(ctx.expression)
     Generate(
+      // visitFunctionName(ctx.qualifiedName) 返回的是 FunctionIdentifier 对象，这是一个 class（不是Expression 也不是 LogicalPlan）
+      // 然后构建 UnresolvedGenerator 这个 Expression
+      // 然后这个 Expression 对象，作为一个参数，参与了 Generate 这个 LogicalPlan 的构建
       UnresolvedGenerator(visitFunctionName(ctx.qualifiedName), expressions),
       join = true,
       outer = ctx.OUTER != null,
@@ -905,6 +1007,7 @@ class AstBuilder extends SqlBaseBaseVisitor[AnyRef] with Logging {
   /**
    * Create sequence of expressions from the given sequence of contexts.
    */
+   // 给定一批context 生成一批 expression
   private def expressionList(trees: java.util.List[ExpressionContext]): Seq[Expression] = {
     trees.asScala.map(expression)
   }
@@ -1187,8 +1290,8 @@ class AstBuilder extends SqlBaseBaseVisitor[AnyRef] with Logging {
    */
   protected def visitFunctionName(ctx: QualifiedNameContext): FunctionIdentifier = {
     ctx.identifier().asScala.map(_.getText) match {
-      case Seq(db, fn) => FunctionIdentifier(fn, Option(db))
-      case Seq(fn) => FunctionIdentifier(fn, None)
+      case Seq(db, fn) => FunctionIdentifier(fn, Option(db))  // 如果 ctx.identifier() 返回的Seq 长度是2，说明第一个元素是DB，第二个才是 函数名称
+      case Seq(fn) => FunctionIdentifier(fn, None)  // 如果ctx.identifier() 返回的 Seq 长度是1，只需要用当前 DB 去构造 FunctionIdentifier
       case other => throw new ParseException(s"Unsupported function name '${ctx.getText}'", ctx)
     }
   }

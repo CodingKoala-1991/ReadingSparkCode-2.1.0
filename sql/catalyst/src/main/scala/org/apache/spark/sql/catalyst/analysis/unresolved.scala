@@ -184,6 +184,7 @@ object UnresolvedAttribute {
  * The analyzer will resolve this generator.
  */
 case class UnresolvedGenerator(name: FunctionIdentifier, children: Seq[Expression])
+  // 这是一个 Expression
   extends Generator {
 
   override def elementSchema: StructType = throw new UnresolvedException(this, "elementTypes")
