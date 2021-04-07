@@ -455,7 +455,7 @@ class AstBuilder extends SqlBaseBaseVisitor[AnyRef] with Logging {
     val from = OneRowRelation.optional(ctx.fromClause) {
       visitFromClause(ctx.fromClause)
     }
-    // 最后再执行select 和 where 的部分
+    // 转换除了 from 之外的部分
     withQuerySpecification(ctx, from)
   }
 
@@ -466,17 +466,29 @@ class AstBuilder extends SqlBaseBaseVisitor[AnyRef] with Logging {
    *
    * Note that query hints are ignored (both by the parser and the builder).
    */
+  // 最核心的部分
+  // 转换除了 from 之外的部分
+  // 比如 select，where，aggregation 等等
   private def withQuerySpecification(
       ctx: QuerySpecificationContext,
       relation: LogicalPlan): LogicalPlan = withOrigin(ctx) {
     import ctx._
 
     // WHERE
+    // 内置方法，传入 where部分的 context以及 对应 的 expression
+    // 构建 Filter 这个 LogicalPlan，Filter 是 原来的 pan 这个 LogicalPlan 的 父亲节点
     def filter(ctx: BooleanExpressionContext, plan: LogicalPlan): LogicalPlan = {
       Filter(expression(ctx), plan)
     }
 
     // Expressions.
+    // 对应的 语法规则如下：
+    // namedExpressionSeq
+    //    : namedExpression (',' namedExpression)*
+    //    ;
+    // 这里调用的 是 QuerySpecificationContext 的 namedExpressionSeq 方法
+    // 其实就是对应 select 中的 select a,b,c,d 等各个被select 出来的字段
+    // 他们也是 Expression
     val expressions = Option(namedExpressionSeq).toSeq
       .flatMap(_.namedExpression.asScala)
       .map(typedVisit[Expression])
@@ -484,6 +496,16 @@ class AstBuilder extends SqlBaseBaseVisitor[AnyRef] with Logging {
     // Create either a transform or a regular query.
     val specType = Option(kind).map(_.getType).getOrElse(SqlBaseParser.SELECT)
     specType match {
+      // TRANSFORM 这种形式
+      // 样例：
+      // SELECT
+      //    TRANSFORM (col1, col2)
+      //    USING './test.py'
+      //    AS (new1, new2)
+      // FORM
+      //    test;
+      // 用 MR 的方式 执行特定 脚本 去执行执行SparkSQL
+      // 因此这种形式 的 转换 没有细看
       case SqlBaseParser.MAP | SqlBaseParser.REDUCE | SqlBaseParser.TRANSFORM =>
         // Transform
 
@@ -514,40 +536,79 @@ class AstBuilder extends SqlBaseBaseVisitor[AnyRef] with Logging {
           withScriptIOSchema(
             ctx, inRowFormat, recordWriter, outRowFormat, recordReader, schemaLess))
 
+      // 常规的 select 操作语句，主要细看这种常规的转换
+      // 对应的 语法规则如下：
+      //     | ((kind=SELECT setQuantifier? namedExpressionSeq fromClause?
+      //       | fromClause (kind=SELECT setQuantifier? namedExpressionSeq)?)
+      //       lateralView*
+      //       (WHERE where=booleanExpression)?
+      //       aggregation?
+      //       (HAVING having=booleanExpression)?
+      //       windows?)
       case SqlBaseParser.SELECT =>
         // Regular select
 
         // Add lateral views.
+        // 首先在 FROM 对应的 LogicalPlan 套上 lateral views 对应的 LogicalPlan
         val withLateralView = ctx.lateralView.asScala.foldLeft(relation)(withGenerate)
 
         // Add where.
+        // 先调用 内部方法filter 生成 Filter这个LogicalPlan
+        // 然后Filter 就称为旧LogicalPlan 的 父亲节点
         val withFilter = withLateralView.optionalMap(where)(filter)
 
         // Add aggregation or a project.
+        // 再套一层，例如 group by 这种 aggregation
         val namedExpressions = expressions.map {
           case e: NamedExpression => e
           case e: Expression => UnresolvedAlias(e)
         }
         val withProject = if (aggregation != null) {
+          // 三个参数
+          // aggregation，group by 部分的语句
+          // namedExpressions， select a, count(b) 部分的语句
+          // withFilter 当前 LogicalPlan 的 root
+          // select a, count(b) 需要 aggregation 部分的配合
+          // 这种情况套上的 LogicalPlan 是 Aggregation，而不是 Project
           withAggregation(aggregation, namedExpressions, withFilter)
         } else if (namedExpressions.nonEmpty) {
+          // 如果没有 aggregation，就是 select a,b,c 这种，没有聚合操作
+          // 直接套上 Project 就可以了
           Project(namedExpressions, withFilter)
         } else {
           withFilter
         }
 
         // Having
+        // 对应的 规则
+        //        (HAVING having=booleanExpression)?
+        // 这里 optional 是一个柯里化函数
+        // 传两个参数，having 和 一个具体的 转换方法
+        // having 就是一个 BooleanExpressionContext，就是 having 关键子后面那一坨
         val withHaving = withProject.optional(having) {
           // Note that we add a cast to non-predicate expressions. If the expression itself is
           // already boolean, the optimizer will get rid of the unnecessary cast.
+          // expression(having) 就是把 having 这个 BooleanExpressionContext 转换成一个 Expression
           val predicate = expression(having) match {
             case p: Predicate => p
             case e => Cast(e, BooleanType)
           }
+          // 最终 having 其实就是一个 Filter
           Filter(predicate, withProject)
         }
 
         // Distinct
+        // 语法规则
+        //     | ((kind=SELECT setQuantifier? namedExpressionSeq fromClause?
+        //       | fromClause (kind=SELECT setQuantifier? namedExpressionSeq)?)
+        //       lateralView*
+        //       (WHERE where=booleanExpression)?
+        //       aggregation?
+        //       (HAVING having=booleanExpression)?
+        //       windows?)
+        //
+        // setQuantifier() 就是对应 DISTINCT 的部分
+        // 就是说，在select 的时候，要么 select a,b,c   要么 select distinct a,b,c 这种
         val withDistinct = if (setQuantifier() != null && setQuantifier().DISTINCT() != null) {
           Distinct(withHaving)
         } else {
@@ -555,6 +616,7 @@ class AstBuilder extends SqlBaseBaseVisitor[AnyRef] with Logging {
         }
 
         // Window
+        // windows 就是 WindowsContext
         withDistinct.optionalMap(windows)(withWindows)
     }
   }
@@ -562,6 +624,7 @@ class AstBuilder extends SqlBaseBaseVisitor[AnyRef] with Logging {
   /**
    * Create a (Hive based) [[ScriptInputOutputSchema]].
    */
+   // 就是 select 的时候依赖 一个 脚本的时候使用的
   protected def withScriptIOSchema(
       ctx: QuerySpecificationContext,
       inRowFormat: RowFormatContext,
@@ -602,6 +665,10 @@ class AstBuilder extends SqlBaseBaseVisitor[AnyRef] with Logging {
    * - MINUS [DISTINCT]
    * - INTERSECT [DISTINCT]
    */
+  // 集合操作的 转换
+  // 都有 left 和 right 两个 LogicalPlan
+  // 然后根据不同的 集合操作类型
+  // 生成不同的 LogicalPlan
   override def visitSetOperation(ctx: SetOperationContext): LogicalPlan = withOrigin(ctx) {
     val left = plan(ctx.left)
     val right = plan(ctx.right)
@@ -666,15 +733,38 @@ class AstBuilder extends SqlBaseBaseVisitor[AnyRef] with Logging {
   /**
    * Add an [[Aggregate]] to a logical plan.
    */
+  // 三个参数
+  // ctx，aggregation部分，group by 部分的语句
+  // selectExpressions， select a, count(b) 部分的语句
+  // query 当前 LogicalPlan 的 root，这里是加上了 Filter 的
+  // select a, count(b) 需要 aggregation 部分的配合
   private def withAggregation(
       ctx: AggregationContext,
       selectExpressions: Seq[NamedExpression],
       query: LogicalPlan): LogicalPlan = withOrigin(ctx) {
     import ctx._
+    // 对应的语法规则
+    // aggregation
+    //    : GROUP BY groupingExpressions+=expression (',' groupingExpressions+=expression)* (
+    //      WITH kind=ROLLUP
+    //    | WITH kind=CUBE
+    //    | kind=GROUPING SETS '(' groupingSet (',' groupingSet)* ')')?
+    //    ;
+    //
+    // 所以首先还是把 group by 后面的 expression 部分 真正转成 Expression
+    // groupingExpressions 就是 AggregationContext 的一个属性，类型是 List<ExpressionContext>
     val groupByExpressions = expressionList(groupingExpressions)
 
+    // 这里调用 AggregationContext 的 public TerminalNode GROUPING() 方法
+    // https://www.cnblogs.com/Allen-rg/p/10648231.html
+    // 两种不同的GROUP BY 形式 参考上面的 URL
+    // 1 GROUP BY .... GROUPING SETS (...)
+        // 例如 grouping sets (month,day)，按照 month 和 day group by 之后的结果进行 union
+    // 2 GROUP BY .... (WITH CUBE | WITH ROLLUP)?
+        // CUBE，group by 的所有字段交叉组合进行分析
+        // ROLLUP，从左到右，带层级关系的组合分析
     if (GROUPING != null) {
-      // GROUP BY .... GROUPING SETS (...)
+      //
       val expressionMap = groupByExpressions.zipWithIndex.toMap
       val numExpressions = expressionMap.size
       val mask = (1 << numExpressions) - 1
@@ -691,9 +781,12 @@ class AstBuilder extends SqlBaseBaseVisitor[AnyRef] with Logging {
             bitmap & ~(1 << (numExpressions - 1 - index))
         }
       }
+      // GroupingSets 也是一个 LogicalPlan
       GroupingSets(masks, groupByExpressions, query, selectExpressions)
     } else {
       // GROUP BY .... (WITH CUBE | WITH ROLLUP)?
+      // Cube 和 Rollup 都是 Expression
+      // 构建好了 Expression，组装进 Aggregate 这个 LogicalPlan 里
       val mappedGroupByExpressions = if (CUBE != null) {
         Seq(Cube(groupByExpressions))
       } else if (ROLLUP != null) {
@@ -839,6 +932,18 @@ class AstBuilder extends SqlBaseBaseVisitor[AnyRef] with Logging {
    * are defined as a number between 0 and 100.
    * - TABLESAMPLE(BUCKET x OUT OF y): Sample the table down to a 'x' divided by 'y' fraction.
    */
+  // 语法规则如下：
+  // sample
+  //    : TABLESAMPLE '('
+  //      ( (percentage=(INTEGER_VALUE | DECIMAL_VALUE) sampleType=PERCENTLIT)
+  //      | (expression sampleType=ROWS)
+  //      | sampleType=BYTELENGTH_LITERAL
+  //      | (sampleType=BUCKET numerator=INTEGER_VALUE OUT OF denominator=INTEGER_VALUE (ON (identifier | qualifiedName '(' ')'))?))
+  //      ')'
+  //    ;
+  //
+  // 抽样，又是一个 with 类型的方法
+  // 在 query 这个  LogicalPlan 再加一个 Sample 或者 Limit 的 logicalPlan
   private def withSample(ctx: SampleContext, query: LogicalPlan): LogicalPlan = withOrigin(ctx) {
     // Create a sampled plan if we need one.
     def sample(fraction: Double): Sample = {
@@ -854,10 +959,12 @@ class AstBuilder extends SqlBaseBaseVisitor[AnyRef] with Logging {
 
     ctx.sampleType.getType match {
       case SqlBaseParser.ROWS =>
+        // 如果是按行数抽样，就是 Limit 这类 LogicalPlan
         Limit(expression(ctx.expression), query)
 
       case SqlBaseParser.PERCENTLIT =>
         val fraction = ctx.percentage.getText.toDouble
+        // 按照百分比抽样，调用自身的 sample 方法，然后 Sample 这个 LogicalPlan
         sample(fraction / 100.0d)
 
       case SqlBaseParser.BYTELENGTH_LITERAL =>
@@ -874,6 +981,7 @@ class AstBuilder extends SqlBaseBaseVisitor[AnyRef] with Logging {
         }
 
       case SqlBaseParser.BUCKET =>
+        // 按桶抽样，也是 Sample
         sample(ctx.numerator.getText.toDouble / ctx.denominator.getText.toDouble)
     }
   }
@@ -881,6 +989,7 @@ class AstBuilder extends SqlBaseBaseVisitor[AnyRef] with Logging {
   /**
    * Create a logical plan for a sub-query.
    */
+   // 没啥好看的
   override def visitSubquery(ctx: SubqueryContext): LogicalPlan = withOrigin(ctx) {
     plan(ctx.queryNoWith)
   }
@@ -894,12 +1003,24 @@ class AstBuilder extends SqlBaseBaseVisitor[AnyRef] with Logging {
    * }}}
    */
   override def visitTable(ctx: TableContext): LogicalPlan = withOrigin(ctx) {
+  // TABLE 关键字后面，紧跟着的是一个表，构造 一个 UnresolvedRelation 的 LogicalPlan
     UnresolvedRelation(visitTableIdentifier(ctx.tableIdentifier), None)
   }
 
+  // 接下来几个都是关于 relation 的
+  // relation 相关的语法规则为
+  // relationPrimary
+  //    : tableIdentifier sample? (AS? strictIdentifier)?               #tableName
+  //    | '(' queryNoWith ')' sample? (AS? strictIdentifier)?           #aliasedQuery
+  //    | '(' relation ')' sample? (AS? strictIdentifier)?              #aliasedRelation
+  //    | inlineTable                                                   #inlineTableDefault2
+  //    | identifier '(' (expression (',' expression)*)? ')'            #tableValuedFunction
+  //    ;
   /**
    * Create an aliased table reference. This is typically used in FROM clauses.
    */
+  // 最常见的一种形式，先拿到 table 名称，构建一个  UnresolvedRelation
+  // 然后 如果要抽样。那就在 这个 UnresolvedRelation 的基础上，再加一个Sample 节点
   override def visitTableName(ctx: TableNameContext): LogicalPlan = withOrigin(ctx) {
     val table = UnresolvedRelation(
       visitTableIdentifier(ctx.tableIdentifier),
@@ -910,6 +1031,7 @@ class AstBuilder extends SqlBaseBaseVisitor[AnyRef] with Logging {
   /**
    * Create a table-valued function call with arguments, e.g. range(1000)
    */
+  // 个人理解是 select * from func(parameter1, parameter2) 这种，func 是一个函数名
   override def visitTableValuedFunction(ctx: TableValuedFunctionContext)
       : LogicalPlan = withOrigin(ctx) {
     UnresolvedTableValuedFunction(ctx.identifier.getText, ctx.expression.asScala.map(expression))
@@ -918,6 +1040,7 @@ class AstBuilder extends SqlBaseBaseVisitor[AnyRef] with Logging {
   /**
    * Create an inline table (a virtual table in Hive parlance).
    */
+   // 没太细看
   override def visitInlineTable(ctx: InlineTableContext): LogicalPlan = withOrigin(ctx) {
     // Get the backing expressions.
     val rows = ctx.expression.asScala.map { e =>
@@ -945,6 +1068,7 @@ class AstBuilder extends SqlBaseBaseVisitor[AnyRef] with Logging {
    * visitAliasedQuery and visitNamedExpression, ANTLR4 however requires us to use 3 different
    * hooks.
    */
+   // 个人理解是 select * from (table1 join table2) 这种
   override def visitAliasedRelation(ctx: AliasedRelationContext): LogicalPlan = withOrigin(ctx) {
     plan(ctx.relation)
       .optionalMap(ctx.sample)(withSample)
@@ -956,6 +1080,7 @@ class AstBuilder extends SqlBaseBaseVisitor[AnyRef] with Logging {
    * visitAliasedRelation and visitNamedExpression, ANTLR4 however requires us to use 3 different
    * hooks.
    */
+  // 个人理解是 select * from (select a1, a2 from table1) 这种
   override def visitAliasedQuery(ctx: AliasedQueryContext): LogicalPlan = withOrigin(ctx) {
     plan(ctx.queryNoWith)
       .optionalMap(ctx.sample)(withSample)
@@ -965,6 +1090,7 @@ class AstBuilder extends SqlBaseBaseVisitor[AnyRef] with Logging {
   /**
    * Create an alias (SubqueryAlias) for a LogicalPlan.
    */
+   // relation 的别名，所以要再加一层
   private def aliasPlan(alias: ParserRuleContext, plan: LogicalPlan): LogicalPlan = {
     SubqueryAlias(alias.getText, plan, None)
   }
@@ -972,6 +1098,7 @@ class AstBuilder extends SqlBaseBaseVisitor[AnyRef] with Logging {
   /**
    * Create a Sequence of Strings for a parenthesis enclosed alias list.
    */
+   // 没太细看
   override def visitIdentifierList(ctx: IdentifierListContext): Seq[String] = withOrigin(ctx) {
     visitIdentifierSeq(ctx.identifierSeq)
   }
@@ -979,6 +1106,7 @@ class AstBuilder extends SqlBaseBaseVisitor[AnyRef] with Logging {
   /**
    * Create a Sequence of Strings for an identifier list.
    */
+  // 没太细看
   override def visitIdentifierSeq(ctx: IdentifierSeqContext): Seq[String] = withOrigin(ctx) {
     ctx.identifier.asScala.map(_.getText)
   }
@@ -989,6 +1117,7 @@ class AstBuilder extends SqlBaseBaseVisitor[AnyRef] with Logging {
   /**
    * Create a [[TableIdentifier]] from a 'tableName' or 'databaseName'.'tableName' pattern.
    */
+   // 其实也没啥看的，构造的 TableIdentifier 既不是 LogicalPlan 也不是 Expression
   override def visitTableIdentifier(
       ctx: TableIdentifierContext): TableIdentifier = withOrigin(ctx) {
     TableIdentifier(ctx.table.getText, Option(ctx.db).map(_.getText))
@@ -1017,6 +1146,9 @@ class AstBuilder extends SqlBaseBaseVisitor[AnyRef] with Logging {
    * Both un-targeted (global) and targeted aliases are supported.
    */
   override def visitStar(ctx: StarContext): Expression = withOrigin(ctx) {
+    // select * from
+    // 或者 select table1.*
+    // 反正select * 最终转换成 UnresolvedStar 这个 Expression
     UnresolvedStar(Option(ctx.qualifiedName()).map(_.identifier.asScala.map(_.getText)))
   }
 
@@ -1024,13 +1156,22 @@ class AstBuilder extends SqlBaseBaseVisitor[AnyRef] with Logging {
    * Create an aliased expression if an alias is specified. Both single and multi-aliases are
    * supported.
    */
+   // 语法规则如下：
+   // namedExpression
+   //    : expression (AS? (identifier | identifierList))?
+   //    ;
   override def visitNamedExpression(ctx: NamedExpressionContext): Expression = withOrigin(ctx) {
     val e = expression(ctx.expression)
     if (ctx.identifier != null) {
+      // identifier 不为空，就是 Alias Expression
+      // 例如 1 + 1 AS a
       Alias(e, ctx.identifier.getText)()
     } else if (ctx.identifierList != null) {
+      // identifierList 不为空，就是 MultiAlias Expression
+      // 例如 stack(2, key, value, key, value) as (a, b)
       MultiAlias(e, visitIdentifierList(ctx.identifierList))
     } else {
+      // 如果没有 AS 关键字，那么就是原封不动的 Expression
       e
     }
   }
@@ -1042,6 +1183,18 @@ class AstBuilder extends SqlBaseBaseVisitor[AnyRef] with Logging {
    * A balanced binary tree is created because regular left recursive trees cause considerable
    * performance degradations and can cause stack overflows.
    */
+  // booleanExpression
+  //    : NOT booleanExpression                                        #logicalNot
+  //    | predicated                                                   #booleanDefault
+  //    | left=booleanExpression operator=AND right=booleanExpression  #logicalBinary
+  //    | left=booleanExpression operator=OR right=booleanExpression   #logicalBinary
+  //    | EXISTS '(' query ')'                                         #exists
+  //    ;
+  //
+  // 对应 #logicalBinary
+  // 也就是 expression AND / OR expression
+  //
+  // 这里要把这一系列的 AND / OR 的 expression 转为平衡的二叉树，因为这样可以带来性能上的优化，不会产生 stack overflow
   override def visitLogicalBinary(ctx: LogicalBinaryContext): Expression = withOrigin(ctx) {
     val expressionType = ctx.operator.getType
     val expressionCombiner = expressionType match {
@@ -1088,13 +1241,16 @@ class AstBuilder extends SqlBaseBaseVisitor[AnyRef] with Logging {
    * Invert a boolean expression.
    */
   override def visitLogicalNot(ctx: LogicalNotContext): Expression = withOrigin(ctx) {
+    // 非表达式，在正常 Expression 上再套一个 Not 表达式
     Not(expression(ctx.booleanExpression()))
   }
 
   /**
    * Create a filtering correlated sub-query (EXISTS).
    */
+   //     | EXISTS '(' query ')'                                         #exists
   override def visitExists(ctx: ExistsContext): Expression = {
+    // 所以 Exists 包住的是一个 LogicalPlan
     Exists(plan(ctx.query))
   }
 
@@ -1109,6 +1265,7 @@ class AstBuilder extends SqlBaseBaseVisitor[AnyRef] with Logging {
    * - Greater than: '>'
    * - Greater then or Equal: '>='
    */
+   // 各种比较表达式
   override def visitComparison(ctx: ComparisonContext): Expression = withOrigin(ctx) {
     val left = expression(ctx.left)
     val right = expression(ctx.right)
@@ -1138,8 +1295,15 @@ class AstBuilder extends SqlBaseBaseVisitor[AnyRef] with Logging {
    *    a + 1 IS NULL
    * }}}
    */
+   // 语法规则如下：
+   // predicated
+   //    : valueExpression predicate?
+   //    ;
+   // 其实就是一个 正常的 Expression 和 一个 谓词的结合
   override def visitPredicated(ctx: PredicatedContext): Expression = withOrigin(ctx) {
     val e = expression(ctx.valueExpression)
+    // 因此最终的套路，就是先搞一个 正常的 Expression
+    // 然后在这个的基础上套一个谓词 Expression
     if (ctx.predicate != null) {
       withPredicate(e, ctx.predicate)
     } else {
@@ -1155,6 +1319,7 @@ class AstBuilder extends SqlBaseBaseVisitor[AnyRef] with Logging {
    * - (NOT) RLIKE
    * - IS (NOT) NULL.
    */
+   // 这一类的谓词，其实就是若干 Expression 的结合组成
   private def withPredicate(e: Expression, ctx: PredicateContext): Expression = withOrigin(ctx) {
     // Invert a predicate if it has a valid NOT clause.
     def invertIfNotDefined(e: Expression): Expression = ctx.NOT match {
@@ -1166,6 +1331,7 @@ class AstBuilder extends SqlBaseBaseVisitor[AnyRef] with Logging {
     ctx.kind.getType match {
       case SqlBaseParser.BETWEEN =>
         // BETWEEN is translated to lower <= e && e <= upper
+        // BETWEEN 是好几个 Expression 的嵌套结合，包括 GreaterThanOrEqual LessThanOrEqual And
         invertIfNotDefined(And(
           GreaterThanOrEqual(e, expression(ctx.lower)),
           LessThanOrEqual(e, expression(ctx.upper))))
@@ -1196,6 +1362,7 @@ class AstBuilder extends SqlBaseBaseVisitor[AnyRef] with Logging {
    * - Binary XOR
    * - Binary OR: '|'
    */
+   // 各类算术表达式
   override def visitArithmeticBinary(ctx: ArithmeticBinaryContext): Expression = withOrigin(ctx) {
     val left = expression(ctx.left)
     val right = expression(ctx.right)
@@ -1227,6 +1394,7 @@ class AstBuilder extends SqlBaseBaseVisitor[AnyRef] with Logging {
    * - Minus: '-'
    * - Bitwise Not: '~'
    */
+   // 单个节点的 + -？？？？？其实没想明白什么情况下使用
   override def visitArithmeticUnary(ctx: ArithmeticUnaryContext): Expression = withOrigin(ctx) {
     val value = expression(ctx.valueExpression)
     ctx.operator.getType match {
@@ -1242,6 +1410,7 @@ class AstBuilder extends SqlBaseBaseVisitor[AnyRef] with Logging {
   /**
    * Create a [[Cast]] expression.
    */
+   // 强制转换
   override def visitCast(ctx: CastContext): Expression = withOrigin(ctx) {
     Cast(expression(ctx.expression), typedVisit(ctx.dataType))
   }
@@ -1249,6 +1418,10 @@ class AstBuilder extends SqlBaseBaseVisitor[AnyRef] with Logging {
   /**
    * Create a (windowed) Function expression.
    */
+   // 就是窗口函数，和之前分析的 窗口LogicalPlan 有点类似
+   // 语法规则如下：
+   //     qualifiedName '(' (setQuantifier? expression (',' expression)*)? ')' (OVER windowSpec)?  #functionCall
+   // 没有细看
   override def visitFunctionCall(ctx: FunctionCallContext): Expression = withOrigin(ctx) {
     // Create the function call.
     val name = ctx.qualifiedName.getText
@@ -1276,6 +1449,7 @@ class AstBuilder extends SqlBaseBaseVisitor[AnyRef] with Logging {
    * Create a current timestamp/date expression. These are different from regular function because
    * they do not require the user to specify braces when calling them.
    */
+   // 调用时间方法，也转换成了一个 Expression
   override def visitTimeFunctionCall(ctx: TimeFunctionCallContext): Expression = withOrigin(ctx) {
     ctx.name.getType match {
       case SqlBaseParser.CURRENT_DATE =>
@@ -1299,6 +1473,7 @@ class AstBuilder extends SqlBaseBaseVisitor[AnyRef] with Logging {
   /**
    * Create a reference to a window frame, i.e. [[WindowSpecReference]].
    */
+   // 没有细看
   override def visitWindowRef(ctx: WindowRefContext): WindowSpecReference = withOrigin(ctx) {
     WindowSpecReference(ctx.identifier.getText)
   }
@@ -1306,12 +1481,25 @@ class AstBuilder extends SqlBaseBaseVisitor[AnyRef] with Logging {
   /**
    * Create a window definition, i.e. [[WindowSpecDefinition]].
    */
+   // windowSpec
+   //    : name=identifier  #windowRef
+   //    | '('
+   //      ( CLUSTER BY partition+=expression (',' partition+=expression)*
+   //      | ((PARTITION | DISTRIBUTE) BY partition+=expression (',' partition+=expression)*)?
+   //        ((ORDER | SORT) BY sortItem (',' sortItem)*)?)
+   //      windowFrame?
+   //      ')'              #windowDef
+   //    ;
+   //
+   // 其实就是 窗口函数的具体定义
   override def visitWindowDef(ctx: WindowDefContext): WindowSpecDefinition = withOrigin(ctx) {
     // CLUSTER BY ... | PARTITION BY ... ORDER BY ...
+    // 首先会生成 partition 和 order 的 Expression
     val partition = ctx.partition.asScala.map(expression)
     val order = ctx.sortItem.asScala.map(visitSortItem)
 
     // RANGE/ROWS BETWEEN ...
+    // 然后生成 SpecifiedWindowFrame，不是Expression 也不是 LogicalPlan
     val frameSpecOption = Option(ctx.windowFrame).map { frame =>
       val frameType = frame.frameType.getType match {
         case SqlBaseParser.RANGE => RangeFrame
@@ -1324,6 +1512,7 @@ class AstBuilder extends SqlBaseBaseVisitor[AnyRef] with Logging {
         Option(frame.end).map(visitFrameBound).getOrElse(CurrentRow))
     }
 
+    // 然后把上面这些 class 组合成为 窗口函数的 Expression
     WindowSpecDefinition(
       partition,
       order,
@@ -1335,6 +1524,7 @@ class AstBuilder extends SqlBaseBaseVisitor[AnyRef] with Logging {
    * Preceding/Following boundaries. These expressions must be constant (foldable) and return an
    * integer value.
    */
+   // 窗口函数里的上下限
   override def visitFrameBound(ctx: FrameBoundContext): FrameBoundary = withOrigin(ctx) {
     // We currently only allow foldable integers.
     def value: Int = {
@@ -1363,6 +1553,7 @@ class AstBuilder extends SqlBaseBaseVisitor[AnyRef] with Logging {
   /**
    * Create a [[CreateStruct]] expression.
    */
+   // 没细看
   override def visitRowConstructor(ctx: RowConstructorContext): Expression = withOrigin(ctx) {
     CreateStruct(ctx.expression.asScala.map(expression))
   }
@@ -1370,8 +1561,10 @@ class AstBuilder extends SqlBaseBaseVisitor[AnyRef] with Logging {
   /**
    * Create a [[ScalarSubquery]] expression.
    */
+  // 没细看
   override def visitSubqueryExpression(
       ctx: SubqueryExpressionContext): Expression = withOrigin(ctx) {
+      //
     ScalarSubquery(plan(ctx.query))
   }
 
@@ -1385,6 +1578,8 @@ class AstBuilder extends SqlBaseBaseVisitor[AnyRef] with Logging {
    *   END
    * }}}
    */
+   // 又是一个组合的 Expression
+   // 样式看注释
   override def visitSimpleCase(ctx: SimpleCaseContext): Expression = withOrigin(ctx) {
     val e = expression(ctx.value)
     val branches = ctx.whenClause.asScala.map { wCtx =>
@@ -1405,6 +1600,7 @@ class AstBuilder extends SqlBaseBaseVisitor[AnyRef] with Logging {
    *
    * @param ctx the parse tree
    *    */
+   // 看注释很容易明白
   override def visitSearchedCase(ctx: SearchedCaseContext): Expression = withOrigin(ctx) {
     val branches = ctx.whenClause.asScala.map { wCtx =>
       (expression(wCtx.condition), expression(wCtx.result))
@@ -1417,6 +1613,7 @@ class AstBuilder extends SqlBaseBaseVisitor[AnyRef] with Logging {
    * either be a [[UnresolvedAttribute]] (if the parent is an [[UnresolvedAttribute]]), or an
    * [[UnresolvedExtractValue]] if the parent is some expression.
    */
+   // 没看懂？？？？？？？
   override def visitDereference(ctx: DereferenceContext): Expression = withOrigin(ctx) {
     val attr = ctx.fieldName.getText
     expression(ctx.base) match {
@@ -1430,6 +1627,7 @@ class AstBuilder extends SqlBaseBaseVisitor[AnyRef] with Logging {
   /**
    * Create an [[UnresolvedAttribute]] expression.
    */
+   //     | identifier     #columnReference
   override def visitColumnReference(ctx: ColumnReferenceContext): Expression = withOrigin(ctx) {
     UnresolvedAttribute.quoted(ctx.getText)
   }
@@ -1437,6 +1635,7 @@ class AstBuilder extends SqlBaseBaseVisitor[AnyRef] with Logging {
   /**
    * Create an [[UnresolvedExtractValue]] expression, this is used for subscript access to an array.
    */
+   // 似乎是说，某个值通过 数组下标去获取
   override def visitSubscript(ctx: SubscriptContext): Expression = withOrigin(ctx) {
     UnresolvedExtractValue(expression(ctx.value), expression(ctx.index))
   }
@@ -1445,6 +1644,7 @@ class AstBuilder extends SqlBaseBaseVisitor[AnyRef] with Logging {
    * Create an expression for an expression between parentheses. This is need because the ANTLR
    * visitor cannot automatically convert the nested context into an expression.
    */
+   // 没看懂
   override def visitParenthesizedExpression(
      ctx: ParenthesizedExpressionContext): Expression = withOrigin(ctx) {
     expression(ctx.expression)
@@ -1453,6 +1653,7 @@ class AstBuilder extends SqlBaseBaseVisitor[AnyRef] with Logging {
   /**
    * Create a [[SortOrder]] expression.
    */
+   // 看具体实现实现，比较容易理解
   override def visitSortItem(ctx: SortItemContext): SortOrder = withOrigin(ctx) {
     val direction = if (ctx.DESC != null) {
       Descending
@@ -1476,6 +1677,7 @@ class AstBuilder extends SqlBaseBaseVisitor[AnyRef] with Logging {
    * }}}
    * Currently Date, Timestamp and Binary typed literals are supported.
    */
+   // 看起来也不是很重要，没看懂
   override def visitTypeConstructor(ctx: TypeConstructorContext): Literal = withOrigin(ctx) {
     val value = string(ctx.STRING)
     val valueType = ctx.identifier.getText.toUpperCase
@@ -1501,6 +1703,7 @@ class AstBuilder extends SqlBaseBaseVisitor[AnyRef] with Logging {
   /**
    * Create a NULL literal expression.
    */
+   // 空值
   override def visitNullLiteral(ctx: NullLiteralContext): Literal = withOrigin(ctx) {
     Literal(null)
   }
@@ -1508,6 +1711,7 @@ class AstBuilder extends SqlBaseBaseVisitor[AnyRef] with Logging {
   /**
    * Create a Boolean literal expression.
    */
+   // 要么 TRUE 要么 FALSE
   override def visitBooleanLiteral(ctx: BooleanLiteralContext): Literal = withOrigin(ctx) {
     if (ctx.getText.toBoolean) {
       Literal.TrueLiteral
@@ -1520,6 +1724,7 @@ class AstBuilder extends SqlBaseBaseVisitor[AnyRef] with Logging {
    * Create an integral literal expression. The code selects the most narrow integral type
    * possible, either a BigDecimal, a Long or an Integer is returned.
    */
+   // 整形字面值
   override def visitIntegerLiteral(ctx: IntegerLiteralContext): Literal = withOrigin(ctx) {
     BigDecimal(ctx.getText) match {
       case v if v.isValidInt =>
@@ -1533,11 +1738,13 @@ class AstBuilder extends SqlBaseBaseVisitor[AnyRef] with Logging {
   /**
    * Create a decimal literal for a regular decimal number.
    */
+   // 也是字面值
   override def visitDecimalLiteral(ctx: DecimalLiteralContext): Literal = withOrigin(ctx) {
     Literal(BigDecimal(ctx.getText).underlying())
   }
 
   /** Create a numeric literal expression. */
+  // 字面值
   private def numericLiteral
       (ctx: NumberContext, minValue: BigDecimal, maxValue: BigDecimal, typeName: String)
       (converter: String => Any): Literal = withOrigin(ctx) {
@@ -1558,6 +1765,7 @@ class AstBuilder extends SqlBaseBaseVisitor[AnyRef] with Logging {
   /**
    * Create a Byte Literal expression.
    */
+   // 字面值
   override def visitTinyIntLiteral(ctx: TinyIntLiteralContext): Literal = {
     numericLiteral(ctx, Byte.MinValue, Byte.MaxValue, ByteType.simpleString)(_.toByte)
   }
@@ -1566,12 +1774,14 @@ class AstBuilder extends SqlBaseBaseVisitor[AnyRef] with Logging {
    * Create a Short Literal expression.
    */
   override def visitSmallIntLiteral(ctx: SmallIntLiteralContext): Literal = {
+  // 字面值
     numericLiteral(ctx, Short.MinValue, Short.MaxValue, ShortType.simpleString)(_.toShort)
   }
 
   /**
    * Create a Long Literal expression.
    */
+   //字面值
   override def visitBigIntLiteral(ctx: BigIntLiteralContext): Literal = {
     numericLiteral(ctx, Long.MinValue, Long.MaxValue, LongType.simpleString)(_.toLong)
   }
@@ -1579,6 +1789,7 @@ class AstBuilder extends SqlBaseBaseVisitor[AnyRef] with Logging {
   /**
    * Create a Double Literal expression.
    */
+  //字面值
   override def visitDoubleLiteral(ctx: DoubleLiteralContext): Literal = {
     numericLiteral(ctx, Double.MinValue, Double.MaxValue, DoubleType.simpleString)(_.toDouble)
   }
@@ -1586,6 +1797,7 @@ class AstBuilder extends SqlBaseBaseVisitor[AnyRef] with Logging {
   /**
    * Create a BigDecimal Literal expression.
    */
+  //字面值
   override def visitBigDecimalLiteral(ctx: BigDecimalLiteralContext): Literal = {
     val raw = ctx.getText.substring(0, ctx.getText.length - 2)
     try {
@@ -1599,6 +1811,7 @@ class AstBuilder extends SqlBaseBaseVisitor[AnyRef] with Logging {
   /**
    * Create a String literal expression.
    */
+  //字面值
   override def visitStringLiteral(ctx: StringLiteralContext): Literal = withOrigin(ctx) {
     Literal(createString(ctx))
   }
@@ -1610,6 +1823,7 @@ class AstBuilder extends SqlBaseBaseVisitor[AnyRef] with Logging {
    *
    * Special characters can be escaped by using Hive/C-style escaping.
    */
+   // 内部调用
   private def createString(ctx: StringLiteralContext): String = {
     ctx.STRING().asScala.map(string).mkString
   }
@@ -1618,6 +1832,7 @@ class AstBuilder extends SqlBaseBaseVisitor[AnyRef] with Logging {
    * Create a [[CalendarInterval]] literal expression. An interval expression can contain multiple
    * unit value pairs, for instance: interval 2 months 2 days.
    */
+   // 未看
   override def visitInterval(ctx: IntervalContext): Literal = withOrigin(ctx) {
     val intervals = ctx.intervalField.asScala.map(visitIntervalField)
     validate(intervals.nonEmpty, "at least one time unit should be given for interval literal", ctx)
@@ -1630,6 +1845,7 @@ class AstBuilder extends SqlBaseBaseVisitor[AnyRef] with Logging {
    * - Single unit.
    * - From-To unit (only 'YEAR TO MONTH' and 'DAY TO SECOND' are supported).
    */
+   // 未看
   override def visitIntervalField(ctx: IntervalFieldContext): CalendarInterval = withOrigin(ctx) {
     import ctx._
     val s = value.getText
@@ -1664,6 +1880,8 @@ class AstBuilder extends SqlBaseBaseVisitor[AnyRef] with Logging {
   /**
    * Resolve/create a primitive type.
    */
+   // 数据类型
+   // 数据类型 不是 Expression 也不是 LogicalPlan
   override def visitPrimitiveDataType(ctx: PrimitiveDataTypeContext): DataType = withOrigin(ctx) {
     (ctx.identifier.getText.toLowerCase, ctx.INTEGER_VALUE().asScala.toList) match {
       case ("boolean", Nil) => BooleanType
@@ -1691,6 +1909,7 @@ class AstBuilder extends SqlBaseBaseVisitor[AnyRef] with Logging {
   /**
    * Create a complex DataType. Arrays, Maps and Structures are supported.
    */
+   // 复杂数据类型
   override def visitComplexDataType(ctx: ComplexDataTypeContext): DataType = withOrigin(ctx) {
     ctx.complex.getType match {
       case SqlBaseParser.ARRAY =>

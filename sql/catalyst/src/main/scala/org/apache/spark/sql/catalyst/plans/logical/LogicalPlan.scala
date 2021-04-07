@@ -453,6 +453,7 @@ abstract class LogicalPlan extends QueryPlan[LogicalPlan] with Logging {
 // SparkSqlAstBuilder 解析的是 command 这一类的 sql 语句（g4文件中statement这个规则下，除了#statementDefault的其他分支都是command ）
 // 包括 load data 从 AST -> LogicalPlan 的转换也在 SparkSqlAstBuilder 这个 class 里
 // visitor 中的 visit 操作，有可能返回 Expression，也可能返回 LogicalPlan
+// AstBuilder 前面部分的 visitXXX 方法返回的都是 LogicalPlan，后面部分 visitXXX 方法返回的是 Expression，还有少量的 visitXXX 方法返回的是 数据类型
 
 
 
