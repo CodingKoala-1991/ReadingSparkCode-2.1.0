@@ -661,6 +661,9 @@ class Analyzer(
       }
     }
 
+    // resolveOperators 方法
+    // 把rule 先应用在 这个 LogicalPlan 的所有孩子 LogicalPlan 上，最后再用在自己身上
+    // 返回rule 应用完之后的整棵 LogicalPlan tree
     def apply(plan: LogicalPlan): LogicalPlan = plan resolveOperators {
       // 在解析字段的时候，首先要保证 children 都已经解析了
       case p: LogicalPlan if !p.childrenResolved => p
@@ -762,12 +765,18 @@ class Analyzer(
       exprs: Seq[NamedExpression],
       child: LogicalPlan): Seq[NamedExpression] = {
       exprs.flatMap {
+        // 第 1 种情况，直接就是 *
         // Using Dataframe/Dataset API: testData2.groupBy($"a", $"b").agg($"*")
-        // 直接就是 *
         case s: Star => s.expand(child, resolver)
+        // 第 2 种情况
         // Using SQL API without running ResolveAlias: SELECT * FROM testData2 group by a, b
+        // 个人理解，在带有 group by 这一类的 aggregation 的语句中
+        // select 部分，除非写明具体字段，不然都会被解析成 UnresolvedAlias，* 也是
+        // 参考的是 AstBuilder 中的 转换代码得到的个人理解
         case UnresolvedAlias(s: Star, _) => s.expand(child, resolver)
+        // 第 3 种情况
         case o if containsStar(o :: Nil) => expandStarExpression(o, child) :: Nil
+        // 第 4 种情况
         case o => o :: Nil
       }.map(_.asInstanceOf[NamedExpression])
     }

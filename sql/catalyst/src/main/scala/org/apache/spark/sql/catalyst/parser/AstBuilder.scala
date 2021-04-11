@@ -559,6 +559,8 @@ class AstBuilder extends SqlBaseBaseVisitor[AnyRef] with Logging {
 
         // Add aggregation or a project.
         // 再套一层，例如 group by 这种 aggregation
+        // 个人理解，在带有 group by 这一类的 aggregation 的语句中
+        // select 部分，除非写明具体字段，不然都会被解析成 UnresolvedAlias，* 也是
         val namedExpressions = expressions.map {
           case e: NamedExpression => e
           case e: Expression => UnresolvedAlias(e)
