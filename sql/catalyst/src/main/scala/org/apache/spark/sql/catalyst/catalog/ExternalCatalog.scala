@@ -30,6 +30,8 @@ import org.apache.spark.sql.catalyst.expressions.Expression
  *
  * Implementations should throw [[NoSuchDatabaseException]] when databases don't exist.
  */
+ // 其实就是 DB table partition 和 function 这几类资源的 增删改查
+ // 有两个具体实现类 InMemoryCatalog 和 HiveExternalCatalog
 abstract class ExternalCatalog {
   import CatalogTypes.TablePartitionSpec
 

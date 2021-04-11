@@ -61,6 +61,10 @@ class QueryExecution(val sparkSession: SparkSession, val logical: LogicalPlan) {
 
   lazy val analyzed: LogicalPlan = {
     SparkSession.setActiveSession(sparkSession)
+    // 借助 Analyzer 开始对 LogicalPlan 的 Tree 进行解析
+    // Analyzer 是一个 Batch 解析的驱动，继承自 RuleExecutor
+    // Analyzer 在内部就定义好了 batches，调用 execute 的时候，就会根据这批 batches 开始对 unsolved 的 LogicalPlan Tree 进行迭代
+    // 最终得到 resolved 的 LogicalPlan Tree
     sparkSession.sessionState.analyzer.execute(logical)
   }
 

@@ -39,6 +39,9 @@ import org.apache.spark.sql.types._
  * requested.  The attributes produced by this function will be automatically copied anytime rules
  * result in changes to the Generator or its children.
  */
+
+// Generator 是一个 Expression
+// Generate 是一个 LogicalPlan
 trait Generator extends Expression {
 
   override def dataType: DataType = ArrayType(elementSchema)

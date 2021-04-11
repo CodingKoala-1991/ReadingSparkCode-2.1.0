@@ -55,6 +55,7 @@ trait FunctionResourceLoader {
 }
 
 object DummyFunctionResourceLoader extends FunctionResourceLoader {
+// 实现了 FunctionResourceLoader
   override def loadResource(resource: FunctionResource): Unit = {
     throw new UnsupportedOperationException
   }

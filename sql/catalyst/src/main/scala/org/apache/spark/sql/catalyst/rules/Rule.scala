@@ -29,4 +29,5 @@ abstract class Rule[TreeType <: TreeNode[_]] extends Logging {
   }
 
   def apply(plan: TreeType): TreeType
+  // 接受一个节点，返回一个新节点
 }

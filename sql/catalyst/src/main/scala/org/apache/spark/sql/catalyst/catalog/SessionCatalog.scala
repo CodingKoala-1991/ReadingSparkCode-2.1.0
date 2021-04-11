@@ -46,11 +46,29 @@ object SessionCatalog {
  * This class must be thread-safe.
  */
 class SessionCatalog(
+    // 外部系统 Catalog ******************
+    // 提供了 管理 DB table partition 和 function 的接口
+    // 就是 DB、table、partition 和 function 的增删改查接口
+    // 线程安全，和外部系统交互
+    // ExternalCatalog 是一个 abstract class，有两个具体class : InMemoryCatalog 和 HiveExternalCatalog
+    // 这两个 具体的实现类还没有细看？？？？？？？？？？？？？？？？？？？？？？？？？？？？？？/
     externalCatalog: ExternalCatalog,
+    // 全局的临时view 管理 ******************
+    // 就是维护了 viewDefinitions 这样一个 HashMap，key 是 view 的名称，value 是 view 对应的 LogicalPlan
     globalTempViewManager: GlobalTempViewManager,
+    // 函数资源加载器 ******************
+    // 支持 SparkSQL 的内置函数，UDF 和 Hive 中的各种函数
+    // 这些函数通过 Jar 包 或者 文件类型提供
     functionResourceLoader: FunctionResourceLoader,
+    // 函数注册接口 ******************
+    // 这个接口相对功能比较多
+    // 线程安全，也是通过 Map 来注册各种函数
+    // 提供各种函数的 增删改查
     functionRegistry: FunctionRegistry,
+    // 上面4个属性才是 SessionCatalog 中比较重要的
+    // SparkSQL 的 conf 配置
     conf: CatalystConf,
+    // hadoop 的 配置信息
     hadoopConf: Configuration) extends Logging {
   import SessionCatalog._
   import CatalogTypes.TablePartitionSpec
@@ -82,6 +100,7 @@ class SessionCatalog(
   // specify the database (e.g. DROP TABLE my_table). In these cases we must first
   // check whether the temporary table or function exists, then, if not, operate on
   // the corresponding item in the current database.
+  // 指向当前的 DB
   @GuardedBy("this")
   protected var currentDb = formatDatabaseName(DEFAULT_DATABASE)
 

@@ -36,6 +36,11 @@ import org.apache.spark.sql.catalyst.util.StringUtils
  *
  * @param database The system preserved virtual database that keeps all the global temporary views.
  */
+ // 线程安全的全局 view 原子操作
+ // 可以创建，更新，删除和重命名 view
+ // 依赖 viewDefinitions 这个 HashMap 对 view 的名称 和 数据源进行映射
+ // 也就是说，在 viewDefinitions 中，key 是 String，表示一个 view 的名称
+ // value 是一个 LogicalPlan
 class GlobalTempViewManager(val database: String) {
 
   /** List of view definitions, mapping from view name to logical plan. */

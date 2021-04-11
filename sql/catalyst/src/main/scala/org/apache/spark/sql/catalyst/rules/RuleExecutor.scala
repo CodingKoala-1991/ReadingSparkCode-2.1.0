@@ -58,9 +58,13 @@ abstract class RuleExecutor[TreeType <: TreeNode[_]] extends Logging {
   case class FixedPoint(maxIterations: Int) extends Strategy
 
   /** A batch of rules. */
+  // Batch 有两个重要的属性
+  // rules：一堆 Rule
+  // strategy： 一个 Strategy，要么Once（执行一次），要么FixedPoint（执行的最大次数是有限制的）
   protected case class Batch(name: String, strategy: Strategy, rules: Rule[TreeType]*)
 
   /** Defines a sequence of rule batches, to be overridden by the implementation. */
+  // 每个Batch 都包含一堆 Rule
   protected def batches: Seq[Batch]
 
 
@@ -71,6 +75,8 @@ abstract class RuleExecutor[TreeType <: TreeNode[_]] extends Logging {
   def execute(plan: TreeType): TreeType = {
     var curPlan = plan
 
+    // Batch 和 Rule 都要按照预先定义好的顺序
+    // 还有迭代次数的限制
     batches.foreach { batch =>
       val batchStartPlan = curPlan
       var iteration = 1
@@ -79,6 +85,7 @@ abstract class RuleExecutor[TreeType <: TreeNode[_]] extends Logging {
 
       // Run until fix point (or the max number of iterations as specified in the strategy.
       while (continue) {
+        // 使用batch 中的 rules 去迭代传进来的节点
         curPlan = batch.rules.foldLeft(curPlan) {
           case (plan, rule) =>
             val startTime = System.nanoTime()
@@ -97,6 +104,7 @@ abstract class RuleExecutor[TreeType <: TreeNode[_]] extends Logging {
             result
         }
         iteration += 1
+        // 迭代次数超过 strategy 中定义的次数，batch 的迭代会停止
         if (iteration > batch.strategy.maxIterations) {
           // Only log if this is a rule that is supposed to run more than once.
           if (iteration != 2) {
@@ -109,7 +117,7 @@ abstract class RuleExecutor[TreeType <: TreeNode[_]] extends Logging {
           }
           continue = false
         }
-
+        // 如果两次迭代之后，节点没有变化，那么也会停止
         if (curPlan.fastEquals(lastPlan)) {
           logTrace(
             s"Fixed point reached for batch ${batch.name} after ${iteration - 1} iterations.")

@@ -69,6 +69,7 @@ trait FunctionRegistry {
 class SimpleFunctionRegistry extends FunctionRegistry {
 
   protected val functionBuilders =
+  // functionBuilders 就是一个 Map，维护了 函数的注册信息
     StringKeyHashMap[(ExpressionInfo, FunctionBuilder)](caseSensitive = false)
 
   override def registerFunction(

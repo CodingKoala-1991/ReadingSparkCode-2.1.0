@@ -64,6 +64,7 @@ class Analyzer(
     this(catalog, conf, conf.optimizerMaxIterations)
   }
 
+  // 是否大小写敏感
   def resolver: Resolver = conf.resolver
 
   protected val fixedPoint = FixedPoint(maxIterations)
@@ -73,39 +74,57 @@ class Analyzer(
    */
   val extendedResolutionRules: Seq[Rule[LogicalPlan]] = Nil
 
+  // Rule 里面大量使用 Scala 的 模式匹配 case
+  // case 后面后没有加 @ 是两种不一样的 模式匹配
+  // 参见 https://notes.mengxin.science/2018/09/07/scala-special-symbol-usage/
+
+  // Analyzer 定义了 6个 Batch，这个类里面定义的 Rule 是 内置 Rule
+  // 还有 外置的 Rule（extendedResolutionRules 这个变量里保存）
+  // 6 个 Batch 的名称以及功能
+      // Substitution：替换操作
+      // Resolution：解析，我理解就是把 unresolved 的节点进行 resolved
+      // Nondeterministic：将LogicalPlan 中 非 Project 或者非Filter 算子的 不确定的表达式提取出来，放在内层的或者最终的 Project 算子中
+      // UDF：处理UDF
+      // FixNullability：统一设定 LogicalPlan 中表达式的 nullable 属性
+      // Cleanup：清理 LogicalPlan 中无效的 alias
+  // 每一个 Batch 具体的 Rule 也列举在下面了
+  // 一个 Batch 要执行多次，是因为有时候一次解析并不能成功解析，参见 《Spark SQL 内核剖析》P54 - P56 的 case
   lazy val batches: Seq[Batch] = Seq(
     Batch("Substitution", fixedPoint,
-      CTESubstitution,
-      WindowsSubstitution,
-      EliminateUnions,
-      new SubstituteUnresolvedOrdinals(conf)),
+      CTESubstitution,  // 把 with 表达式中的多个 LogicalPlan 合并成一个
+      WindowsSubstitution,  // windows 窗口函数的 替换策略，UnresolvedWindowExpression -> WindowExpression (resolved WindowExpression)
+      EliminateUnions,  // 去掉无效的 Union
+      // group by 1,2,3 这种，或者 order by 1, 2, 3 这种
+      // 用数字表示字段，数字下标从 1 开始，不是从0开始
+      new SubstituteUnresolvedOrdinals(conf)),  // 这个Rule 不在 Analyzer 里面, conf 里头可以把这个 feature 设置成打开或者关闭
     Batch("Resolution", fixedPoint,
-      ResolveTableValuedFunctions ::
-      ResolveRelations ::
-      ResolveReferences ::
-      ResolveCreateNamedStruct ::
-      ResolveDeserializer ::
-      ResolveNewInstance ::
-      ResolveUpCast ::
-      ResolveGroupingAnalytics ::
-      ResolvePivot ::
-      ResolveOrdinalInOrderByAndGroupBy ::
-      ResolveMissingReferences ::
-      ExtractGenerator ::
-      ResolveGenerate ::
-      ResolveFunctions ::
-      ResolveAliases ::
-      ResolveSubquery ::
-      ResolveWindowOrder ::
-      ResolveWindowFrame ::
-      ResolveNaturalAndUsingJoin ::
-      ExtractWindowExpressions ::
-      GlobalAggregates ::
-      ResolveAggregateFunctions ::
-      TimeWindowing ::
-      ResolveInlineTables ::
-      TypeCoercion.typeCoercionRules ++
-      extendedResolutionRules : _*),
+      // 这下面的 Rule 很多都是针对 LogicalPlan 进行解析
+      ResolveTableValuedFunctions ::  // 解析可以作为 table 的函数，例如 range，这个也不在 本文件里
+      ResolveRelations ::  // 解析 relation，或者说叫做解析 table
+      ResolveReferences ::  // 解析 列
+      ResolveCreateNamedStruct ::  // 解析结构体的创建
+      ResolveDeserializer ::  // 解析反序列化操作类
+      ResolveNewInstance ::  // 解析新的实例
+      ResolveUpCast ::  // 解析类型转换
+      ResolveGroupingAnalytics ::  // 解析多维分析
+      ResolvePivot ::  // 解析 Pivot 算子
+      ResolveOrdinalInOrderByAndGroupBy ::  // 解析下标聚合
+      ResolveMissingReferences ::  // 解析新的列
+      ExtractGenerator ::  // 解析 生成器
+      ResolveGenerate ::  // 解析生成过程
+      ResolveFunctions ::  // 解析函数
+      ResolveAliases ::  // 解析别名 alias
+      ResolveSubquery ::  // 解析子查询
+      ResolveWindowOrder ::  // 解析窗口函数排序
+      ResolveWindowFrame ::  // 解析窗口函数（WindowsSubstitution 是 窗口函数表达式的 转换，和这个 Rule 不一样）
+      ResolveNaturalAndUsingJoin ::  // 解析自然 join
+      ExtractWindowExpressions ::  // 提取窗口函数表达式
+      GlobalAggregates ::  // 解析全局聚合
+      ResolveAggregateFunctions ::  // 解析聚合函数
+      TimeWindowing ::  // 解析时间窗口
+      ResolveInlineTables ::  // 解析 内联表
+      TypeCoercion.typeCoercionRules ++  // 解析强制类型转换，和类型转换（ResolveUpCast）还不一样
+      extendedResolutionRules : _*),  // 自定义拓展规则
     Batch("Nondeterministic", Once,
       PullOutNondeterministic),
     Batch("UDF", Once,
@@ -119,18 +138,82 @@ class Analyzer(
   /**
    * Analyze cte definitions and substitute child plan with analyzed cte definitions.
    */
+  // 替换 with 语句 的 Rule
+  // with 语句的样例
+  // with
+  // table1 as (select DepartmentID from employees),
+  // table2 as (select DepartmentID from departments)
+  // select table1.DepartmentID
+  // from
+  // (table1 join table2 on table1.DepartmentID = table2.DepartmentID)
+  //
+  // unsolved 的 LogicalPlan tree 如下：
+  // 如果带有 With语句，那么打印出来的tree 是多棵的，如这里，有两棵，分别是 CTE 和 Project
+  // 但其实我自己看 AST -> Unsolved LogicalPlan tree 这部分关于With的，应该不是真的划分成了多棵树
+  // 只是这里输出打印的问题
+  // 所以下面这个Rule，就是要把多个 LogicalPlan tree 合并成一个 LogicalPlan tree
+  // CTE [table1, table2]
+  // :  :- 'SubqueryAlias table1
+  // :  :  +- 'Project ['DepartmentID]
+  // :  :     +- 'UnresolvedRelation `employees`
+  // :  +- 'SubqueryAlias table2
+  // :     +- 'Project ['DepartmentID]
+  // :        +- 'UnresolvedRelation `departments`
+  // +- 'Project ['table1.DepartmentID]
+  //    +- 'Join Inner, ('table1.DepartmentID = 'table2.DepartmentID)
+  //       :- 'UnresolvedRelation `table1`
+  //       +- 'UnresolvedRelation `table2`
+  //
+  // DepartmentID: int
+  // Project [DepartmentID#6]
+  // +- Join Inner, (DepartmentID#6 = DepartmentID#16)
+  //    :- SubqueryAlias table1
+  //    :  +- Project [DepartmentID#6]
+  //    :     +- SubqueryAlias employees
+  //    :        +- Project [_1#2 AS LastName#5, _2#3 AS DepartmentID#6]
+  //    :           +- LocalRelation [_1#2, _2#3]
+  //    +- SubqueryAlias table2
+  //       +- Project [DepartmentID#16]
+  //          +- SubqueryAlias departments
+  //             +- Project [_1#13 AS DepartmentID#16, _2#14 AS DepartmentName#17]
+  //                +- LocalRelation [_1#13, _2#14]
   object CTESubstitution extends Rule[LogicalPlan] {
     def apply(plan: LogicalPlan): LogicalPlan = plan resolveOperators  {
       case With(child, relations) =>
+        // 如果传进来的 LogicalPlan 是 With(child, relations) 这种 LogicalPlan
+        // 其中 child 是一个 LogicalPlan 类型
+        // relations 的类型为 Seq[(String, SubqueryAlias)]，每一个item 都是 k-v形式，k 是 with 的某一个表的alias，v 是一个 LogicalPlan，用来表示这个 alias 表
+        // 就要合并 LogicalPlan
+        //
+        // substituteCTE 传进去两个参数
+        // 第一个参数 child，我理解就是 With 的 子LogicalPlan ，对应真正的query
+        // 第二个参数是 relations 进行 foldLeft 操作的结果
+        //
+        // 对于下面一种case
+        // with a as (select * from table), with b as (select * from a), with c as (select * from b)
+        // select * from c;
+        // with 部分有3张table，但是他们之间是链条引用的关系
+        // 所以下面 substituteCTE 的第二个参数之所以这么长，就是 foldLeft relations，从左到右遍历，变成resolved，才能让下一个能引用
         substituteCTE(child, relations.foldLeft(Seq.empty[(String, LogicalPlan)]) {
           case (resolved, (name, relation)) =>
+            // resolved :+  的意思是 追加一个 k-v
+            // key 是 name，就是 这个with 的 table 的名称
+            // 然后把 这个 unresolved 的 relation 和 前面已经 resolved 的 relation list ，再过一遍 anaylzer
+            // 这样 foldLeft 执行完之后，with 那些嵌套的 table 都 resolved 了，就生成了一个 resolved 的 relation list，作为第二个参数
             resolved :+ name -> execute(substituteCTE(relation, resolved))
         })
       case other => other
     }
 
+    // 这个方法其实就是要把 with 里头的那些table 整合到 一个 LogicalPlan 里
     def substituteCTE(plan: LogicalPlan, cteRelations: Seq[(String, LogicalPlan)]): LogicalPlan = {
+      // 传入一个 LogicalPlan，然后对这个LogicalPlan 递归向下遍历
       plan transformDown {
+        // 如果碰到 UnresolvedRelation 这种LogicalPlan
+        // 从 cteRelations 中找出 table 名匹配的一个
+        // 然后 UnresolvedRelation ，直接变成 一个 SubqueryAlias 的 LogicalPlan 返回，替换掉原来的 UnresolvedRelation
+        // 具体可以看注释中的例子
+        // UnresolvedRelation 和 SubqueryAlias 都是 LogicalPlan
         case u : UnresolvedRelation =>
           val substituted = cteRelations.find(x => resolver(x._1, u.tableIdentifier.table))
             .map(_._2).map { relation =>
@@ -140,6 +223,13 @@ class Analyzer(
           substituted.getOrElse(u)
         case other =>
           // This cannot be done in ResolveSubquery because ResolveSubquery does not know the CTE.
+          // transformExpressions 方法是 LogicalPlan 中的一个方法
+          // 意思是说递归的遍历这个 LogicalPlan 的所有 Expression
+          // 这里意思是说，如果碰到非 UnresolvedRelation 的LogicalPlan，就要看看其他类型的 LogicalPlan 中的 Expression 有没有依赖到 cte
+          // 这里 SubqueryExpression 是一种包含了 Plan 的 Expression
+          // 如果在 Expression 中依赖到了 cte，那么就要调用自身，把这个 UnresolvedRelation 最终替换掉
+          // withNewPlan 方法的意思是，生成一个新的 SubqueryExpression 替换掉老的 SubqueryExpression，但是新的 SubqueryExpression 依赖的 plan 和 老的不同
+          // 老的 SubqueryExpression 包含的 Plan 里可能有 UnresolvedRelation
           other transformExpressions {
             case e: SubqueryExpression =>
               e.withNewPlan(substituteCTE(e.plan, cteRelations))
@@ -152,10 +242,22 @@ class Analyzer(
    * Substitute child plan with WindowSpecDefinitions.
    */
   object WindowsSubstitution extends Rule[LogicalPlan] {
+    // resolveOperators 方法，传入一个偏函数，递归的对 这个 LogicalPlan 的所有孩子 LogicalPlan 应用这个偏函数 rule 之后，再应用到自身
     def apply(plan: LogicalPlan): LogicalPlan = plan resolveOperators {
       // Lookup WindowSpecDefinitions. This rule works with unresolved children.
+      // 这个偏函数 rule 只匹配 WithWindowDefinition 这种LogicalPlan
+      // WithWindowDefinition 由一组 windowDefinitions：Map[String, WindowSpecDefinition] 和 一个 child: LogicalPlan 组成
+      // 一旦遇到 WithWindowDefinition 这种 LogicalPlan，就先序遍历这个 LogicalPlan
+      // 然后遍历 WithWindowDefinition 的 子LogicalPlan 的过程中，其实是遍历 子LogicalPlan 的 Expression
+      // 然后 发现有 UnresolvedWindowExpression 的话，就要 转换成 resolved 的 WindowExpression
+      //
+      // 这里头遍历逻辑进行了转换
+      // 在寻找 WindowSpecDefinitions 这种 LogicalPlan 的时候，是一个后序遍历
+      // 找到了 WindowSpecDefinitions 这种 LogicalPlan之后，对子 LogicalPlan 的遍历又变成先序遍历
+      // 然后对每一个需要转换 Expression 的 LogicalPlan ，持有的 Expression 的转换又是 先序遍历
       case WithWindowDefinition(windowDefinitions, child) =>
         child.transform {
+          // transformExpressions 的意思是遍历这个 LogicalPlan 所持有的 Expression，持有的 Expression 本质也是一个 Tree
           case p => p.transformExpressions {
             case UnresolvedWindowExpression(c, WindowSpecReference(windowName)) =>
               val errorMessage =
@@ -450,6 +552,7 @@ class Analyzer(
   /**
    * Replaces [[UnresolvedRelation]]s with concrete relations from the catalog.
    */
+   // 解决 unsolved 的 relation -> resolved 的 relation
   object ResolveRelations extends Rule[LogicalPlan] {
     private def lookupTableFromCatalog(u: UnresolvedRelation): LogicalPlan = {
       try {
@@ -461,8 +564,14 @@ class Analyzer(
     }
 
     def apply(plan: LogicalPlan): LogicalPlan = plan resolveOperators {
+      // insert table 的 LogicalPlan，里头也有 UnresolvedRelation
+      // 只有 child 都 resolved 了，再解析 insert table 的 LogicalPlan 才有意义
       case i @ InsertIntoTable(u: UnresolvedRelation, parts, child, _, _) if child.resolved =>
+        // lookupTableFromCatalog 会返回一个 SubqueryAlias
+        // 但是这里不需要，直接把 SubqueryAlias 删掉，接上 SubqueryAlias 的child
+        // 因此 要insert 的 table 信息，在 InsertIntoTable 这个LogicalPlan 的属性里面已经保存了
         i.copy(table = EliminateSubqueryAliases(lookupTableFromCatalog(u)))
+      // 仅仅是   UnresolvedRelation
       case u: UnresolvedRelation =>
         val table = u.tableIdentifier
         if (table.database.isDefined && conf.runSQLonFile && !catalog.isTemporaryTable(table) &&
@@ -473,8 +582,11 @@ class Analyzer(
           // from parquet.`/path/to/query`". The plan will get resolved later.
           // Note that we are testing (!db_exists || !table_exists) because the catalog throws
           // an exception from tableExists if the database does not exist.
+          // 上述一些情况下，UnresolvedRelation 不解析，保留原样
+          // 比如 select * from parquet.`/path/to/query`，直接在 文件上 select，就没必要转换成 SubqueryAlias（就是 resolved 的 Relations）
           u
         } else {
+          // 去catalog 里头找匹配的
           lookupTableFromCatalog(u)
         }
     }
@@ -484,6 +596,8 @@ class Analyzer(
    * Replaces [[UnresolvedAttribute]]s with concrete [[AttributeReference]]s from
    * a logical plan node's children.
    */
+   // 解析 字段
+   // UnresolvedAttribute -> AttributeReference
   object ResolveReferences extends Rule[LogicalPlan] {
     /**
      * Generate a new logical plan for the right child with different expression IDs
@@ -548,11 +662,17 @@ class Analyzer(
     }
 
     def apply(plan: LogicalPlan): LogicalPlan = plan resolveOperators {
+      // 在解析字段的时候，首先要保证 children 都已经解析了
       case p: LogicalPlan if !p.childrenResolved => p
 
       // If the projection list contains Stars, expand it.
+      // select 对应 Project 这个 LogicalPlan，这个 LogicalPlan 的 select 的字段列表中有包含 * 的
+      // projectList 就是当前这个 Project LogicalPlan 对应的字段
       case p: Project if containsStar(p.projectList) =>
+        // 根据孩子LogicalPlan 和 自身字段的 Expression 去拓展 字段
         p.copy(projectList = buildExpandedProjectList(p.projectList, p.child))
+
+
       // If the aggregate function argument contains Stars, expand it.
       case a: Aggregate if containsStar(a.aggregateExpressions) =>
         if (a.groupingExpressions.exists(_.isInstanceOf[UnresolvedOrdinal])) {
@@ -634,11 +754,16 @@ class Analyzer(
     /**
      * Build a project list for Project/Aggregate and expand the star if possible
      */
+     // select table1.field1, table2.* from XXXX
+     // 拓展 * 这种字段
+     // exprs，该LogicalPlan 对应的 字段表达式
+     // child，该LogicalPlan 对应的 孩子 LogicalPlan
     private def buildExpandedProjectList(
       exprs: Seq[NamedExpression],
       child: LogicalPlan): Seq[NamedExpression] = {
       exprs.flatMap {
         // Using Dataframe/Dataset API: testData2.groupBy($"a", $"b").agg($"*")
+        // 直接就是 *
         case s: Star => s.expand(child, resolver)
         // Using SQL API without running ResolveAlias: SELECT * FROM testData2 group by a, b
         case UnresolvedAlias(s: Star, _) => s.expand(child, resolver)
@@ -650,6 +775,8 @@ class Analyzer(
     /**
      * Returns true if `exprs` contains a [[Star]].
      */
+    // 传入一组 Expression，这组 Expression 中是否包含 *，不需要递归
+    // 比如 select table1.field1, table1.field2, table2.* from xxxxx 这种
     def containsStar(exprs: Seq[Expression]): Boolean =
       exprs.exists(_.collect { case _: Star => true }.nonEmpty)
 
@@ -2161,6 +2288,7 @@ class Analyzer(
  * Removes [[SubqueryAlias]] operators from the plan. Subqueries are only required to provide
  * scoping information for attributes and can be removed once analysis is complete.
  */
+ // 清除 SubqueryAlias，直接把 child 接上去
 object EliminateSubqueryAliases extends Rule[LogicalPlan] {
   def apply(plan: LogicalPlan): LogicalPlan = plan transformUp {
     case SubqueryAlias(_, child, _) => child
@@ -2170,6 +2298,9 @@ object EliminateSubqueryAliases extends Rule[LogicalPlan] {
 /**
  * Removes [[Union]] operators from the plan if it just has one child.
  */
+ // 如果一个 Union 算子 只有一个 LogicalPlan
+ // 直接返回 children 的 head ，就是第一个
+ // 这是一个替换 Rule
 object EliminateUnions extends Rule[LogicalPlan] {
   def apply(plan: LogicalPlan): LogicalPlan = plan transform {
     case Union(children) if children.size == 1 => children.head

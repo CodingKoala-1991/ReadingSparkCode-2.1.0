@@ -137,8 +137,8 @@ class AstBuilder extends SqlBaseBaseVisitor[AnyRef] with Logging {
   // with 语句的样例
   // WITH table_1 AS (
   // SELECT GENERATE_SERIES('2012-06-29', '2012-07-03', '1 day'::INTERVAL) AS date
-  // )
-  // WITH table_2 AS (
+  // ),
+  // table_2 AS (
   // SELECT GENERATE_SERIES('2012-06-30', '2012-07-13', '1 day'::INTERVAL) AS date
   // )
   // SELECT * FROM table_1
@@ -830,6 +830,40 @@ class AstBuilder extends SqlBaseBaseVisitor[AnyRef] with Logging {
   // 在 qualifiedName 后面紧跟着 (expression, expression...) 这样的形式，其实就是传给 UDF 的 参数 或者 expression，可能有1个，也可能多个
   // tblName 就是 view 的名称，例如样例1中的 insideLayer1 和 insideLayer2，如果有多个view，在select 的时候，要加上 view 的名称的
   // 然后 as colName1, colName2...对应着 UDF 返回的每一列的名称
+  //
+  //
+  //
+  // 一个 从 官方 doc 抄来的 example
+  // CREATE TABLE person (id INT, name STRING, age INT, class INT, address STRING);
+  //INSERT INTO person VALUES
+  //    (100, 'John', 30, 1, 'Street 1'),
+  //    (200, 'Mary', NULL, 1, 'Street 2'),
+  //    (300, 'Mike', 80, 3, 'Street 3'),
+  //    (400, 'Dan', 50, 4, 'Street 4');
+  //
+  //SELECT * FROM person
+  //    LATERAL VIEW EXPLODE(ARRAY(30, 60)) tableName AS c_age
+  //    LATERAL VIEW EXPLODE(ARRAY(40, 80)) AS d_age;
+  //+------+-------+-------+--------+-----------+--------+--------+
+  //|  id  | name  |  age  | class  |  address  | c_age  | d_age  |
+  //+------+-------+-------+--------+-----------+--------+--------+
+  //| 100  | John  | 30    | 1      | Street 1  | 30     | 40     |
+  //| 100  | John  | 30    | 1      | Street 1  | 30     | 80     |
+  //| 100  | John  | 30    | 1      | Street 1  | 60     | 40     |
+  //| 100  | John  | 30    | 1      | Street 1  | 60     | 80     |
+  //| 200  | Mary  | NULL  | 1      | Street 2  | 30     | 40     |
+  //| 200  | Mary  | NULL  | 1      | Street 2  | 30     | 80     |
+  //| 200  | Mary  | NULL  | 1      | Street 2  | 60     | 40     |
+  //| 200  | Mary  | NULL  | 1      | Street 2  | 60     | 80     |
+  //| 300  | Mike  | 80    | 3      | Street 3  | 30     | 40     |
+  //| 300  | Mike  | 80    | 3      | Street 3  | 30     | 80     |
+  //| 300  | Mike  | 80    | 3      | Street 3  | 60     | 40     |
+  //| 300  | Mike  | 80    | 3      | Street 3  | 60     | 80     |
+  //| 400  | Dan   | 50    | 4      | Street 4  | 30     | 40     |
+  //| 400  | Dan   | 50    | 4      | Street 4  | 30     | 80     |
+  //| 400  | Dan   | 50    | 4      | Street 4  | 60     | 40     |
+  //| 400  | Dan   | 50    | 4      | Street 4  | 60     | 80     |
+  //+------+-------+-------+--------+-----------+--------+--------+
   private def withGenerate(
       query: LogicalPlan,  // 现在已经叠加了的 relations 和 views 对应的 LogicalPlan
       ctx: LateralViewContext): LogicalPlan = withOrigin(ctx) {

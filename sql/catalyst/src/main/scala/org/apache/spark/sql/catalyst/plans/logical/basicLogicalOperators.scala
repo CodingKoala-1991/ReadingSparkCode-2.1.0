@@ -87,8 +87,10 @@ case class Generate(
     generatorOutput: Seq[Attribute],
     child: LogicalPlan)
   extends UnaryNode {
-  // 这个 LogicalPlan 没有细看？？？？？？
-
+  // 这是一个神奇的 LogicalPlan
+  // 例如 一列拆成多行的 UDF 就属于 这个 LogicalPlan 的
+  //
+  // 简单说来，就是可以把 一行数据 -> 若干行数据，都可以归到这个 LogicalPlan
   /** The set of all attributes produced by this node. */
   def generatedSet: AttributeSet = AttributeSet(generatorOutput)
 

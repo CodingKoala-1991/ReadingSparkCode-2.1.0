@@ -250,7 +250,7 @@ abstract class QueryPlan[PlanType <: QueryPlan[PlanType]] extends TreeNode[PlanT
    *
    * @param rule the rule to be applied to every expression in this operator.
    */
-  // 借助 rule，转换该  Operator 的 所有 Expression，先序遍历（down）
+  // 借助 rule，转换该  Operator 的 所持有的 Expression，先序遍历（down），因为持有的 Expression 也是一个树状结构，就是遍历 Expression Tree
   // 最终调用下面的 transformExpressionsDown 方法
   def transformExpressions(rule: PartialFunction[Expression, Expression]): this.type = {
     transformExpressionsDown(rule)

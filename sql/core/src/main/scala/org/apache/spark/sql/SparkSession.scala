@@ -597,7 +597,37 @@ class SparkSession private(
 
     // sessionState.sqlParser.parsePlan(sqlText 返回了LogicalPlan 的 Tree 的 root，也是一个 LogicalPlan
     // 然后将 这个 root LogicalPlan 作为参数塞到 ofRows 这个方法里
+    // ofRows 这个方法 拿到的是 LogicalPlan Tree 的 root 节点，也是一个 LogicalPlan
+
+    // def ofRows(sparkSession: SparkSession, logicalPlan: LogicalPlan): DataFrame = {
+     //    val qe = sparkSession.sessionState.executePlan(logicalPlan)
+     //    qe.assertAnalyzed()
+     //    new Dataset[Row](sparkSession, qe, RowEncoder(qe.analyzed.schema))
+     //  }
     Dataset.ofRows(self, sessionState.sqlParser.parsePlan(sqlText))
+
+    // 然后执行 sparkSession.sessionState.executePlan(logicalPlan) 去解析刚刚由 AST 转换的 LogicalPlan
+    // 上面这一句 对应   SessionState 这个 class 中的
+    // def executePlan(plan: LogicalPlan): QueryExecution = new QueryExecution(sparkSession, plan)
+    // 上面这句话，就是创建一个 QueryExecution 的 Object
+    // QueryExecution 中有一个 lazy 的属性，因此在 初始化一个 QueryExecution 的 object 的时候，应该是不会真正调用
+    // 只有在需要的时候，才会调用这个 analyzed 属性，调用 analyzed 属性的时候，就会触发
+    // analyzer.execute(logical)，就会真正的去解析 LogicalPlan Tree
+    // lazy val analyzed: LogicalPlan = {
+     //    SparkSession.setActiveSession(sparkSession)
+     //    sparkSession.sessionState.analyzer.execute(logical)
+     //  }
+    //
+     // 借助 Analyzer 开始对 LogicalPlan 的 Tree 进行解析
+     // Analyzer 是一个 Batch 解析的驱动，继承自 RuleExecutor
+     // Analyzer 在内部就定义好了 batches，调用 execute 的时候，就会根据这批 batches 开始对 unsolved 的 LogicalPlan Tree 进行迭代
+     // 最终得到 resolved 的 LogicalPlan Tree
+     // Analyzer 代码的大头就是 各种 rule
+     //
+     // 每一个 Rule 接受一个 LogicalPlan，通过转换逻辑返回一个 LogicalPlan
+     // 但是每一个 LogicalPlan 也是一个 tree 结构，在 Rule 内部遍历 这个LogicalPlan Tree的逻辑，也是写在 Rule 的 apply 代码里的
+     // 也就是说，每次Rule 的 apply 方法，是对传入的整个 LogicalPlan 进行遍历
+     // 也就是说，对一个 LogicalPlan 应用一个 Rule，遍历 整个 LogicalPlan tree 的顺序，也是可以在 Rule 里定义的
   }
 
   /**

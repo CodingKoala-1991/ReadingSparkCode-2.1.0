@@ -37,13 +37,13 @@ class UnresolvedException[TreeType <: TreeNode[_]](tree: TreeType, function: Str
 /**
  * Holds the name of a relation that has yet to be looked up in a catalog.
  */
+// 一张表，如果没有catalog 中的信息解析
 case class UnresolvedRelation(
 // 构造需要两个参数
 // tableIdentifier： 表示这个 unresolved 的 relation 对应的表的名称，但是并没有真正的绑定到 Catalog 上具体的真实表。
 // alias：表的别名
     tableIdentifier: TableIdentifier,
     alias: Option[String] = None) extends LeafNode {
-    //
 
   /** Returns a `.` separated name for this relation. */
   def tableName: String = tableIdentifier.unquotedString
@@ -60,11 +60,29 @@ case class UnresolvedRelation(
  * @param names list of column names
  * @param rows expressions for the data
  */
+// inline table，就是用 VALUES 关键字 初始化的表
+// 样例
+// SELECT * FROM VALUES ("one", 1);
+// +----+----+
+// |col1|col2|
+// +----+----+
+// | one|   1|
+// +----+----+
+//
+// SELECT * FROM VALUES ("one", array(0, 1)), ("two", array(2, 3)) AS data(a, b);
+// +---+------+
+// |  a|     b|
+// +---+------+
+// |one|[0, 1]|
+// |two|[2, 3]|
+// +---+------+
+//
+// names：每一列的列名，如果没有指定列名，似乎就是用下标数字表示
+// rows：其实就是整个inline table 的数据，是一个二维数组，数组的每一个元素都用 Expression 来表示
 case class UnresolvedInlineTable(
     names: Seq[String],
     rows: Seq[Seq[Expression]])  // 构造的时候需要多个 Expression
   extends LeafNode {
-  //
 
   lazy val expressionsResolved: Boolean = rows.forall(_.forall(_.resolved))
   override lazy val resolved = false
@@ -77,9 +95,12 @@ case class UnresolvedInlineTable(
  *   select * from range(10);
  * }}}
  */
+// 用函数表示的 table
+// 例如上面整个样例： functionName = range，functionArgs = [10]
 case class UnresolvedTableValuedFunction(functionName: String, functionArgs: Seq[Expression])
   extends LeafNode {
-  //
+  // 函数表达式做成 table
+  // 例如这里 range(10) 就是一个数据源
 
   override def output: Seq[Attribute] = Nil
 
@@ -89,6 +110,8 @@ case class UnresolvedTableValuedFunction(functionName: String, functionArgs: Seq
 /**
  * Holds the name of an attribute that has yet to be resolved.
  */
+// 没有被解析的 属性，或者说叫做没有被解析的列
+//  nameParts：用来标示列的，比如 table1.field1     table1.field1.key1
 case class UnresolvedAttribute(nameParts: Seq[String]) extends Attribute with Unevaluable {
 
   def name: String =
@@ -127,6 +150,7 @@ object UnresolvedAttribute {
    * Creates an [[UnresolvedAttribute]], from a single quoted string (for example using backticks in
    * HiveQL.  Since the string is consider quoted, no processing is done on the name.
    */
+  // `field` 这种形式的 字段
   def quoted(name: String): UnresolvedAttribute = new UnresolvedAttribute(Seq(name))
 
   /**
@@ -183,6 +207,47 @@ object UnresolvedAttribute {
  * the [[org.apache.spark.sql.catalyst.plans.logical.Generate]] operator.
  * The analyzer will resolve this generator.
  */
+// 样例
+// CREATE TABLE person (id INT, name STRING, age INT, class INT, address STRING);
+//INSERT INTO person VALUES
+//    (100, 'John', 30, 1, 'Street 1'),
+//    (200, 'Mary', NULL, 1, 'Street 2'),
+//    (300, 'Mike', 80, 3, 'Street 3'),
+//    (400, 'Dan', 50, 4, 'Street 4');
+//
+//SELECT * FROM person
+//    LATERAL VIEW EXPLODE(ARRAY(30, 60)) tableName AS c_age
+//    LATERAL VIEW EXPLODE(ARRAY(40, 80)) AS d_age;
+//+------+-------+-------+--------+-----------+--------+--------+
+//|  id  | name  |  age  | class  |  address  | c_age  | d_age  |
+//+------+-------+-------+--------+-----------+--------+--------+
+//| 100  | John  | 30    | 1      | Street 1  | 30     | 40     |
+//| 100  | John  | 30    | 1      | Street 1  | 30     | 80     |
+//| 100  | John  | 30    | 1      | Street 1  | 60     | 40     |
+//| 100  | John  | 30    | 1      | Street 1  | 60     | 80     |
+//| 200  | Mary  | NULL  | 1      | Street 2  | 30     | 40     |
+//| 200  | Mary  | NULL  | 1      | Street 2  | 30     | 80     |
+//| 200  | Mary  | NULL  | 1      | Street 2  | 60     | 40     |
+//| 200  | Mary  | NULL  | 1      | Street 2  | 60     | 80     |
+//| 300  | Mike  | 80    | 3      | Street 3  | 30     | 40     |
+//| 300  | Mike  | 80    | 3      | Street 3  | 30     | 80     |
+//| 300  | Mike  | 80    | 3      | Street 3  | 60     | 40     |
+//| 300  | Mike  | 80    | 3      | Street 3  | 60     | 80     |
+//| 400  | Dan   | 50    | 4      | Street 4  | 30     | 40     |
+//| 400  | Dan   | 50    | 4      | Street 4  | 30     | 80     |
+//| 400  | Dan   | 50    | 4      | Street 4  | 60     | 40     |
+//| 400  | Dan   | 50    | 4      | Street 4  | 60     | 80     |
+//+------+-------+-------+--------+-----------+--------+--------+
+//
+//  LATERAL VIEW + Function 就是一个 Generator 的效果
+// 这里进行列拆分，展开成多行
+// 两个属性
+// 1 name，FunctionIdentifier 类型，标记的是一个函数，这个类型既不是 LogicalPlan 也不是 Expression
+// 2 children，我理解应该是 传给函数的参数
+//
+// 例如上面这个case
+// name 就是 EXPLODE 这个函数
+// children 对应 ARRAY(30, 60) 这个表达式
 case class UnresolvedGenerator(name: FunctionIdentifier, children: Seq[Expression])
   // 这是一个 Expression
   extends Generator {
@@ -206,6 +271,8 @@ case class UnresolvedGenerator(name: FunctionIdentifier, children: Seq[Expressio
     throw new UnsupportedOperationException(s"Cannot evaluate expression: $this")
 }
 
+// name，函数的名称对应的 FunctionIdentifier
+// children，这个函数传入的参数
 case class UnresolvedFunction(
     name: FunctionIdentifier,
     children: Seq[Expression],
@@ -231,6 +298,7 @@ object UnresolvedFunction {
  * Represents all of the input attributes to a given relational operator, for example in
  * "SELECT * FROM ...". A [[Star]] gets automatically expanded during analysis.
  */
+// select * 对应的基类
 abstract class Star extends LeafExpression with NamedExpression {
 
   override def name: String = throw new UnresolvedException(this, "name")
@@ -257,13 +325,21 @@ abstract class Star extends LeafExpression with NamedExpression {
  *              targets' columns are produced. This can either be a table name or struct name. This
  *              is a list of identifiers that is the path of the expansion.
  */
+// 在构建  UnresolvedStar 只有一个属性
+// target：Option[Seq[String]]，就是要展开的table
+// 如果是 select * ,那么 target 就是 None
+// 如果是 select table1.* 那么target 就是 Option[Seq["table1"]
+// 如果是 select table1.*, table2.field2.*, table3.field3 from XXXX, 那么这里就会有两个 Star Expression 以及一个 Attribute Expression
+// 对于 table2.field2.* 这种，target 就是 ["table2", "field2"]
 case class UnresolvedStar(target: Option[Seq[String]]) extends Star with Unevaluable {
 
   override def expand(input: LogicalPlan, resolver: Resolver): Seq[NamedExpression] = {
     // If there is no table specified, use all input attributes.
+    // 如果target == None，那么直接把子LogicalPlan（input）的 所有 output 就是展开
     if (target.isEmpty) return input.output
 
     val expandedAttributes =
+      // 只有一个 target，这个 target 肯定是 table，那么也是把这个 table 的属性都拿出来
       if (target.get.size == 1) {
         // If there is a table, pick out attributes that are part of this table.
         input.output.filter(_.qualifier.exists(resolver(_, target.get.head)))
@@ -271,9 +347,12 @@ case class UnresolvedStar(target: Option[Seq[String]]) extends Star with Unevalu
         List()
       }
     if (expandedAttributes.nonEmpty) return expandedAttributes
+    // 下面解决多个 target
 
     // Try to resolve it as a struct expansion. If there is a conflict and both are possible,
     // (i.e. [name].* is both a table and a struct), the struct path can always be qualified.
+    // 把 target 扔到 孩子（input）里头去查找，看看能不能找到某一个 attribute
+    // 如果找到了，肯定是 类似 table2.field2.* 这种的
     val attribute = input.resolve(target.get, resolver)
     if (attribute.isDefined) {
       // This target resolved to an attribute in child. It must be a struct. Expand it.
@@ -308,6 +387,10 @@ case class UnresolvedStar(target: Option[Seq[String]]) extends Star with Unevalu
  * @param child the computation being performed
  * @param names the names to be associated with each output of computing [[child]].
  */
+// 给构造出来的 新列 使用
+// 例如上面这个例子  stack(2, key, value, key, value) as (a, b)，增加两个新列 a 和 b
+// child 就是 stack(2, key, value, key, value) 这个 Expression
+// names 就是 a 和 b
 case class MultiAlias(child: Expression, names: Seq[String])
   extends UnaryExpression with NamedExpression with CodegenFallback {
 
@@ -337,6 +420,8 @@ case class MultiAlias(child: Expression, names: Seq[String])
  *
  * @param expressions Expressions to expand.
  */
+// 已经 resolved 的 * 表达式
+// expressions 就是要展开的 attribute
 case class ResolvedStar(expressions: Seq[NamedExpression]) extends Star with Unevaluable {
   override def newInstance(): NamedExpression = throw new UnresolvedException(this, "newInstance")
   override def expand(input: LogicalPlan, resolver: Resolver): Seq[NamedExpression] = expressions
@@ -351,6 +436,13 @@ case class ResolvedStar(expressions: Seq[NamedExpression]) extends Star with Une
  * @param extraction The expression to describe the extraction,
  *                   can be key of Map, index of Array, field name of Struct.
  */
+// 抽取特定值的 Expression
+//  child ：要被抽取 value 的 Expression
+// extraction: 如何抽取value 的 Expression ，可以是一个 Map 的 key，Array 的下标，以及 一个 Struct 的 field
+// 例如
+// UnresolvedExtractValue(Literal.create(Seq(1), ArrayType(IntegerType)), Literal.create(0, IntegerType))
+// children 就是 Literal.create(Seq(1), ArrayType(IntegerType))，是一个 Literal 的 Expression，表示 Seq(1)
+// extraction 传入的是一个下标 0，表示哟啊提取 Seq(1) 中 0 号下标的数据
 case class UnresolvedExtractValue(child: Expression, extraction: Expression)
   extends UnaryExpression with Unevaluable {
 
@@ -371,6 +463,13 @@ case class UnresolvedExtractValue(child: Expression, extraction: Expression)
  *                  with the result of computing [[child]]
  *
  */
+// 我理解就是一个 套壳用的  Expression
+// child，就是一个要被包进去的 Expression
+// aliasFunc: Option的，是一个方法，最终用来生成这个 Expression 的结果的 alias
+//
+// 比如 select id, avg(score) from table group by id;
+// id 这种的是 UnsolvedAttribute
+// avg(score) 就是一个 Expression，但是没有 as, 所以再套一层壳，做成 UnresolvedAlias。
 case class UnresolvedAlias(
     child: Expression,
     aliasFunc: Option[Expression => String] = None)
@@ -397,6 +496,7 @@ case class UnresolvedAlias(
  * @param inputAttributes The input attributes used to resolve deserializer expression, can be empty
  *                        if we want to resolve deserializer by children output.
  */
+ // 这个没有细看
 case class UnresolvedDeserializer(deserializer: Expression, inputAttributes: Seq[Attribute] = Nil)
   extends UnaryExpression with Unevaluable with NonSQLExpression {
   // The input attributes used to resolve deserializer expression must be all resolved.
@@ -426,6 +526,9 @@ case class GetColumnByOrdinal(ordinal: Int, dataType: DataType) extends LeafExpr
  * }}}
  * @param ordinal ordinal starts from 1, instead of 0
  */
+ // 按照 数字 进行 order 或者 group 的 Expression，而且是 unresolved 的那种
+ // 例如 select a, b from table order by 1, 2
+//  UnresolvedOrdinal 中只有一个参数，就是一个 index
 case class UnresolvedOrdinal(ordinal: Int)
     extends LeafExpression with Unevaluable with NonSQLExpression {
   override def dataType: DataType = throw new UnresolvedException(this, "dataType")

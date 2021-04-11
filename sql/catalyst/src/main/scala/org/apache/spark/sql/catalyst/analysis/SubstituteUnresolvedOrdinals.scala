@@ -34,7 +34,11 @@ class SubstituteUnresolvedOrdinals(conf: CatalystConf) extends Rule[LogicalPlan]
   }
 
   def apply(plan: LogicalPlan): LogicalPlan = plan transform {
+    // group by 1,2,3 这种，或者 order by 1, 2, 3 这种
     case s: Sort if conf.orderByOrdinal && s.order.exists(o => isIntLiteral(o.child)) =>
+      // s.order 返回的数据结构是 Seq[SortOrder]
+      // 现在就替换成了 Seq[UnresolvedOrdinal]
+      // UnresolvedOrdinal 这个 case class 只有一个属性，就是 index
       val newOrders = s.order.map {
         case order @ SortOrder(ordinal @ Literal(index: Int, IntegerType), _, _) =>
           val newOrdinal = withOrigin(ordinal.origin)(UnresolvedOrdinal(index))
@@ -45,6 +49,8 @@ class SubstituteUnresolvedOrdinals(conf: CatalystConf) extends Rule[LogicalPlan]
 
     case a: Aggregate if conf.groupByOrdinal && a.groupingExpressions.exists(isIntLiteral) =>
       val newGroups = a.groupingExpressions.map {
+        // 在 group by 语句中，如果匹配出 Literal 这种 Expression，且属性是 index 的这种 Int的
+        // 那么就要替换成 UnresolvedOrdinal 这种Expression
         case ordinal @ Literal(index: Int, IntegerType) =>
           withOrigin(ordinal.origin)(UnresolvedOrdinal(index))
         case other => other
