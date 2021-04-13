@@ -29,6 +29,8 @@ import org.apache.spark.sql.types._
  * be evaluated. This is mainly used to provide compatibility with other databases.
  * For example, we use this to support "nvl" by replacing it with "coalesce".
  */
+// 查找所有不可计算的表达式，并用可计算的语义等效表达式替换/重写它们
+// 没有特别仔细的看
 object ReplaceExpressions extends Rule[LogicalPlan] {
   def apply(plan: LogicalPlan): LogicalPlan = plan transformAllExpressions {
     case e: RuntimeReplaceable => e.child
@@ -39,6 +41,7 @@ object ReplaceExpressions extends Rule[LogicalPlan] {
 /**
  * Computes the current date and time to make sure we return the same result in a single query.
  */
+// 在优化阶段对current_database(), current_date(), current_timestamp()函数直接计算出值。
 object ComputeCurrentTime extends Rule[LogicalPlan] {
   def apply(plan: LogicalPlan): LogicalPlan = {
     val dateExpr = CurrentDate()
@@ -55,6 +58,7 @@ object ComputeCurrentTime extends Rule[LogicalPlan] {
 
 
 /** Replaces the expression of CurrentDatabase with the current database name. */
+// 在优化阶段对current_database(), current_date(), current_timestamp()函数直接计算出值。
 case class GetCurrentDatabase(sessionCatalog: SessionCatalog) extends Rule[LogicalPlan] {
   def apply(plan: LogicalPlan): LogicalPlan = {
     plan transformAllExpressions {

@@ -33,6 +33,7 @@ import org.apache.spark.sql.catalyst.rules._
  *    - Aggregate with all empty children and without AggregateFunction expressions like COUNT.
  *    - Generate(Explode) with all empty children. Others like Hive UDTF may return results.
  */
+// 针对有 空表 的 LogicalPlan 进行转换
 object PropagateEmptyRelation extends Rule[LogicalPlan] with PredicateHelper {
   private def isEmptyLocalRelation(plan: LogicalPlan): Boolean = plan match {
     case p: LocalRelation => p.data.isEmpty
@@ -46,9 +47,11 @@ object PropagateEmptyRelation extends Rule[LogicalPlan] with PredicateHelper {
   private def empty(plan: LogicalPlan) = LocalRelation(plan.output, data = Seq.empty)
 
   def apply(plan: LogicalPlan): LogicalPlan = plan transformUp {
+    // Union 中包含了 空的 LocalRelation，正整体为空
     case p: Union if p.children.forall(isEmptyLocalRelation) =>
       empty(p)
 
+    // Join 中包含了 空的 LocalRelation，正整体为空
     case p @ Join(_, _, joinType, _) if p.children.exists(isEmptyLocalRelation) => joinType match {
       case _: InnerLike => empty(p)
       // Intersect is handled as LeftSemi by `ReplaceIntersectWithSemiJoin` rule.
@@ -59,6 +62,7 @@ object PropagateEmptyRelation extends Rule[LogicalPlan] with PredicateHelper {
       case _ => p
     }
 
+    // 单节点类型的 LogicalPlan，如果直接或者间接的 孩子LogicalPlan 对应 空的 LocalRelation，整体也为空
     case p: UnaryNode if p.children.nonEmpty && p.children.forall(isEmptyLocalRelation) => p match {
       case _: Project => empty(p)
       case _: Filter => empty(p)

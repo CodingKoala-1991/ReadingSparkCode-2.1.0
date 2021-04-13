@@ -67,6 +67,9 @@ object EliminateSerialization extends Rule[LogicalPlan] {
  * Combines two adjacent [[TypedFilter]]s, which operate on same type object in condition, into one,
  * mering the filter functions into one conjunctive function.
  */
+// 连续相邻的 两个  CombineTypedFilters，把他们的 function 合并到一起
+// 但是我理解 TypedFilters 不是 SparkSQL 中的东西
+// 而是 DataFrame.filter(func) 这种 DF 的写法中，filter 和 func 一起构成了 TypedFilters
 object CombineTypedFilters extends Rule[LogicalPlan] {
   def apply(plan: LogicalPlan): LogicalPlan = plan transform {
     case t1 @ TypedFilter(_, _, _, _, t2 @ TypedFilter(_, _, _, _, child))

@@ -51,11 +51,11 @@ abstract class Optimizer(sessionCatalog: SessionCatalog, conf: CatalystConf)
     // However, because we also use the analyzer to canonicalized queries (for view definition),
     // we do not eliminate subqueries or compute current time in the analyzer.
     Batch("Finish Analysis", Once,
-      EliminateSubqueryAliases,
-      ReplaceExpressions,
-      ComputeCurrentTime,
-      GetCurrentDatabase(sessionCatalog),
-      RewriteDistinctAggregates) ::
+      EliminateSubqueryAliases,   // 清除 SubqueryAlias，直接把 child 接上去
+      ReplaceExpressions,  // 查找所有不可计算的表达式，并用可计算的语义等效表达式替换/重写它们，没有细看
+      ComputeCurrentTime,  // 在优化阶段对current_database(), current_date(), current_timestamp()函数直接计算出值。
+      GetCurrentDatabase(sessionCatalog),  // 在优化阶段对current_database(), current_date(), current_timestamp()函数直接计算出值。
+      RewriteDistinctAggregates) ::  // ？？？？？？？？？？
     //////////////////////////////////////////////////////////////////////////////////////////
     // Optimizer rules start here
     //////////////////////////////////////////////////////////////////////////////////////////
@@ -65,70 +65,76 @@ abstract class Optimizer(sessionCatalog: SessionCatalog, conf: CatalystConf)
     // - Call CombineUnions again in Batch("Operator Optimizations"),
     //   since the other rules might make two separate Unions operators adjacent.
     Batch("Union", Once,
-      CombineUnions) ::
+      CombineUnions) ::  // 针对多个 Union 操作进行合并
     Batch("Subquery", Once,
-      OptimizeSubqueries) ::
+      OptimizeSubqueries) ::  // 针对所有子查询做Optimizer中优化规则，SubqueryExpression 是包含 LogicalPlan 的 Expression
+      // 例如 SELECT * FROM a WHERE   a.id IN (SELECT id FROM b)，就是 IN 这个表达式里包含了一个 LogicalPlan
     Batch("Replace Operators", fixedPoint,
-      ReplaceIntersectWithSemiJoin,
-      ReplaceExceptWithAntiJoin,
-      ReplaceDistinctWithAggregate) ::
+      ReplaceIntersectWithSemiJoin,  // 用LEFT SemiJoin操作来替换“Intersect distinct”操作，注意不针对"Intersect all"
+      ReplaceExceptWithAntiJoin,  // LEFT AntiJoin操作来替换“except distinct”操作，注意不针对"except all"
+      ReplaceDistinctWithAggregate) ::  // 用 Aggregate LogicalPlan 替换 Distinct LogicalPlan，换句话说Distinct操作不会出现在最终的Physical Plan中的
     Batch("Aggregate", fixedPoint,
-      RemoveLiteralFromGroupExpressions,
-      RemoveRepetitionFromGroupExpressions) ::
+      RemoveLiteralFromGroupExpressions,  // 去除 group 表达式中的 字面量，因为不会对结果造成影响
+      RemoveRepetitionFromGroupExpressions) ::  // 去除 group by 中相同的表达式
     Batch("Operator Optimizations", fixedPoint,
       // Operator push down
-      PushProjectionThroughUnion,
-      ReorderJoin,
-      EliminateOuterJoin,
-      PushPredicateThroughJoin,
-      PushDownPredicate,
-      LimitPushDown,
-      ColumnPruning,
-      InferFiltersFromConstraints,
+      PushProjectionThroughUnion,// ？？？？？？？？？？
+      ReorderJoin,// ？？？？？？？？？？
+      EliminateOuterJoin,// ？？？？？？？？？？
+      PushPredicateThroughJoin,// ？？？？？？？？？？
+      PushDownPredicate,// ？？？？？？？？？？
+      LimitPushDown,  // Limit 下推，可以减小Child操作返回不必要的字段条目，针对 Union 和 Join
+      ColumnPruning,  // 字段剪枝，即删除Child无用的的output字段
+      InferFiltersFromConstraints,// ？？？？？？？？？？
       // Operator combine
-      CollapseRepartition,
-      CollapseProject,
-      CollapseWindow,
-      CombineFilters,
-      CombineLimits,
-      CombineUnions,
+      CollapseRepartition,  // 对多次的 Repartition 操作进行合并，Repartition是一种基于exchange的shuffle操作，操作很重，剪枝很有必要
+      CollapseProject,  // 针对 Project 这种 LogicalPlan 进行合并。将Project与子Project或子Aggregate进行合并。是一种剪枝操作
+      CollapseWindow,// ？？？？？？？？？？
+      CombineFilters,  // Filter操作合并。针对连续多次Filter进行语义合并，即AND合并
+      CombineLimits,  // Limit 操作的 合并。针对GlobalLimit，LocalLimit，Limit三个，如果连续多次，会选择最小的一次limit来进行合并。
+      CombineUnions,  // 针对多个 Union 操作进行合并，就是把相邻的 Union 合并
       // Constant folding and strength reduction
-      NullPropagation,
-      FoldablePropagation,
-      OptimizeIn(conf),
-      ConstantFolding,
-      ReorderAssociativeOperator,
-      LikeSimplification,
-      BooleanSimplification,
-      SimplifyConditionals,
-      RemoveDispensableExpressions,
-      SimplifyBinaryComparison,
-      PruneFilters,
-      EliminateSorts,
-      SimplifyCasts,
-      SimplifyCaseConversionExpressions,
-      RewriteCorrelatedScalarSubquery,
-      EliminateSerialization,
-      RemoveAliasOnlyProject) ::
+      NullPropagation,  // 对NULL常量参与表达式计算进行优化。与True/False相似，如果NULL常量参与计算，那么可以直接把结果设置为NULL，或者简化计算表达式。
+      FoldablePropagation,// ？？？？？？？？？？
+      OptimizeIn(conf),  // 使用HashSet来优化set 的 in 操作
+      ConstantFolding,  // 将可以静态直接求值的表达式直接求出常量，Add(1,2)==>3
+      ReorderAssociativeOperator,  // 将与整型相关的可确定的表达式直接计算出其部分结果，例如：Add(Add(1,a),2)==>Add(a,3)；与ConstantFolding不同的是，这里的Add或Multiply是不确定的，但是可以尽可能计算出部分结果
+      LikeSimplification,  // 简化正则匹配计算。针对前缀，后缀，包含，相等四种正则表达式，可以将Like操作转换为普通的字符串比较。
+      BooleanSimplification,  // 简化 Bool 表达式，AND OR 这种组合逻辑进行优化
+      SimplifyConditionals,  // 简化IF/Case语句逻辑，即删除无用的Case/IF语句
+      RemoveDispensableExpressions,  // 这个规则仅仅去掉没必要的 LogicalPlan，包括两类：UnaryPositive和PromotePrecision，二者仅仅是对子表达式的封装，并无额外操作
+      SimplifyBinaryComparison,  // 针对>=,<=,==等运算，如果两边表达式semanticEquals相等，即可以他们进行简化。
+      PruneFilters,  // 对Filter LogicalPlan 所持有的 Expression 进行剪枝和优化，因为有一些约束可能在 孩子 LogicalPlan 中就已经体现
+      EliminateSorts,// ？？？？？？？？？？
+      SimplifyCasts,  // 删除无用的cast转换。如果cast前后数据类型没有变化，即可以删除掉cast操作
+      SimplifyCaseConversionExpressions,  // 简化字符串的大小写转换函数。如果对字符串进行连续多次的Upper/Lower操作，只需要保留最后一次转换即可。
+      RewriteCorrelatedScalarSubquery,// ？？？？？？？？？？
+      EliminateSerialization,// ？？？？？？？？？？
+      RemoveAliasOnlyProject) ::  // ？？？？？？？？？？
     Batch("Check Cartesian Products", Once,
-      CheckCartesianProducts(conf)) ::
+      CheckCartesianProducts(conf)) ::  // ？？？？？？？？？？
     Batch("Decimal Optimizations", fixedPoint,
-      DecimalAggregates) ::
+      DecimalAggregates) ::  // ？？？？？？？？？？
     Batch("Typed Filter Optimization", fixedPoint,
-      CombineTypedFilters) ::
+      CombineTypedFilters) ::  // 对 TypedFilter 进行合并，我理解TypedFilter 不是 SparkSQL 中的优化策略，是 DF 中的，就是 dataFrame.filter(func)，这个时候的filter 就变成了 CombineTypedFilters
     Batch("LocalRelation", fixedPoint,
-      ConvertToLocalRelation,
-      PropagateEmptyRelation) ::
+      ConvertToLocalRelation,  // 将Project中的每个无需数据交换的表达式应用于LocalRelation中的相应元素，
+      // 例如select a + 1 from tb1转为一个属性名为“a+1”的relation，并且tb1.a的每个值都是加过1的
+      // 而且 tb1 也是一个 LocalRelation
+      // 优化之前，有 Project 和 LocalRelation 两层 LogicalPlan
+      // 优化之后，只有 LocalRelation 这一层 LogicalPlan
+      PropagateEmptyRelation) ::  // 针对有空表的LogicalPlan进行变换
     Batch("OptimizeCodegen", Once,
-      OptimizeCodegen(conf)) ::
+      OptimizeCodegen(conf)) ::  // 用生成的代码替换 表达式，主要针对 CASE WHEN 这种表达式，分支不超过上限，就会触发优化，Spark 2.3 之后这个才比较完善
     Batch("RewriteSubquery", Once,
-      RewritePredicateSubquery,
-      CollapseProject) :: Nil
+      RewritePredicateSubquery,  // ？？？？？？？？？？
+      CollapseProject) :: Nil  // 针对 Project 这种 LogicalPlan 进行合并。将Project与子Project或子Aggregate进行合并。是一种剪枝操作
   }
 
   /**
    * Optimize all the subqueries inside expression.
    */
+  // 针对所有子查询做Optimizer中优化规则，SubqueryExpression 是包含 LogicalPlan 的 Expression
   object OptimizeSubqueries extends Rule[LogicalPlan] {
     def apply(plan: LogicalPlan): LogicalPlan = plan transformAllExpressions {
       case s: SubqueryExpression =>
@@ -209,6 +215,13 @@ object RemoveAliasOnlyProject extends Rule[LogicalPlan] {
 /**
  * Pushes down [[LocalLimit]] beneath UNION ALL and beneath the streamed inputs of outer joins.
  */
+// Limit 下推，可以减小Child操作返回不必要的字段条目，针对 Union 和 Join
+//
+// LocalLimit(exp, Union(children)) 将limit操作下移到每个 Union上面；
+// 实例：(select a from t where a>10 union all select b from t where b>20) limit 30 --> (select a from t where a>10 limit 30 union all select b from t where b>20 limit 30) limit 30
+// 注意：该规则中的Union操作为UNION ALL，不适用于UNION DISTINCT
+//
+// LocalLimit(exp, join @ Join(left, right, joinType, _)) 根据Join操作的类型，将limit操作移下移到left或者right。
 object LimitPushDown extends Rule[LogicalPlan] {
 
   private def stripGlobalLimitIfPresent(plan: LogicalPlan): LogicalPlan = {
@@ -248,8 +261,11 @@ object LimitPushDown extends Rule[LogicalPlan] {
     //   - If neither side is limited, limit the side that is estimated to be bigger.
     case LocalLimit(exp, join @ Join(left, right, joinType, _)) =>
       val newJoin = joinType match {
+        // RightOuter ，limit 下推到 right 的 LogicalPlan
         case RightOuter => join.copy(right = maybePushLimit(exp, right))
+        // LeftOuter ，limit 下推到 left 的 LogicalPlan
         case LeftOuter => join.copy(left = maybePushLimit(exp, left))
+        // 哪边有最大限制，就下推到哪一边
         case FullOuter =>
           (left.maxRows, right.maxRows) match {
             case (None, None) =>
@@ -345,6 +361,8 @@ object PushProjectionThroughUnion extends Rule[LogicalPlan] with PredicateHelper
  *
  * p2 is usually inserted by this rule and useless, p1 could prune the columns anyway.
  */
+// 字段剪枝，即删除Child无用的的output字段
+// 例如：select c from (select max(a) as c,max(b) as d from t) --> select c from (select max(a) as c from t)
 object ColumnPruning extends Rule[LogicalPlan] {
   private def sameOutput(output1: Seq[Attribute], output2: Seq[Attribute]): Boolean =
     output1.size == output2.size &&
@@ -352,6 +370,8 @@ object ColumnPruning extends Rule[LogicalPlan] {
 
   def apply(plan: LogicalPlan): LogicalPlan = removeProjectBeforeFilter(plan transform {
     // Prunes the unused columns from project list of Project/Aggregate/Expand
+    // 如果p2输出的字段有p中不需要的，即可以简化p2的输出。
+    // 实例：select a from (select a,b from t) --> select a from (select a from t)。在下面的CollapseProject会对这个表达式进行二次优化。
     case p @ Project(_, p2: Project) if (p2.outputSet -- p.references).nonEmpty =>
       p.copy(child = p2.copy(projectList = p2.projectList.filter(p.references.contains)))
     case p @ Project(_, a: Aggregate) if (a.outputSet -- p.references).nonEmpty =>
@@ -384,6 +404,7 @@ object ColumnPruning extends Rule[LogicalPlan] {
       p.copy(child = g.copy(join = false))
 
     // Eliminate unneeded attributes from right side of a Left Existence Join.
+    // 对于 left join，右边没有必要的 字段也干掉
     case j @ Join(_, right, LeftExistence(_), _) =>
       j.copy(right = prunedChild(right, j.references))
 
@@ -422,6 +443,8 @@ object ColumnPruning extends Rule[LogicalPlan] {
     case p @ Project(_, _: LeafNode) => p
 
     // for all other logical plans that inherits the output from it's children
+    // child和p有相同的输出，就可以删除Project的封装
+    // 实例：select b from (select b from t) --> select b from t
     case p @ Project(_, child) =>
       val required = child.references ++ p.references
       if ((child.inputSet -- required).nonEmpty) {
@@ -433,6 +456,8 @@ object ColumnPruning extends Rule[LogicalPlan] {
   })
 
   /** Applies a projection only when the child is producing unnecessary attributes */
+  // 孩子 logicalPlan 产生了 没有使用的无必要 attributes
+  // 那么就裁掉，就是更新 孩子LogicalPlan 的 output 字段
   private def prunedChild(c: LogicalPlan, allReferences: AttributeSet) =
     if ((c.outputSet -- allReferences.filter(c.outputSet.contains)).nonEmpty) {
       Project(c.output.filter(allReferences.contains), c)
@@ -455,6 +480,7 @@ object ColumnPruning extends Rule[LogicalPlan] {
  * Combines two adjacent [[Project]] operators into one and perform alias substitution,
  * merging the expressions into one single expression.
  */
+// 针对 相邻 的 Project 这种 LogicalPlan 进行合并。将Project与子Project或子Aggregate进行合并。是一种剪枝操作
 object CollapseProject extends Rule[LogicalPlan] {
 
   def apply(plan: LogicalPlan): LogicalPlan = plan transformUp {
@@ -462,12 +488,16 @@ object CollapseProject extends Rule[LogicalPlan] {
       if (haveCommonNonDeterministicOutput(p1.projectList, p2.projectList)) {
         p1
       } else {
+        // 连续两次Project操作，并且Project输出都是deterministic类型，那么就两个Project进行合并。
+        // select c + 1 from (select a+b as c from t) -->select a+b+1 as c+1 from t。
         p2.copy(projectList = buildCleanedProjectList(p1.projectList, p2.projectList))
       }
     case p @ Project(_, agg: Aggregate) =>
       if (haveCommonNonDeterministicOutput(p.projectList, agg.aggregateExpressions)) {
         p
       } else {
+        // 和上面的效果类似
+        // select c+1 from (select max(a) as c from t) --> select max(a)+1 as c+1 from t
         agg.copy(aggregateExpressions = buildCleanedProjectList(
           p.projectList, agg.aggregateExpressions))
       }
@@ -475,14 +505,27 @@ object CollapseProject extends Rule[LogicalPlan] {
 
   private def collectAliases(projectList: Seq[NamedExpression]): AttributeMap[Alias] = {
     AttributeMap(projectList.collect {
+      // case class Alias(child: Expression, name: String)
+      // Alias 这个 Expression 的 构造参数有两个
+      // child： 实际代表 这个 Alias 的 Expression
+      // name：这个 Alias 的 名字
+      //
+      // 所以这里构建的 k-v 结构如下：
+      // key，这个 Alias 的 name
+      // value，这个 Alias 对象
       case a: Alias => a.toAttribute -> a
     })
   }
 
+  // upper：上层 Project 的 Expression
+  // lower: 下层 Project 的 Expression
   private def haveCommonNonDeterministicOutput(
       upper: Seq[NamedExpression], lower: Seq[NamedExpression]): Boolean = {
     // Create a map of Aliases to their values from the lower projection.
     // e.g., 'SELECT ... FROM (SELECT a + b AS c, d ...)' produces Map(c -> Alias(a + b, c)).
+    // 这里构造了一个 Map，这是用 下层 Project 的 Expression 构建的
+    // key 是 某个 Alias 的 name
+    // value 就是这个 Alias 的 具体 Object
     val aliases = collectAliases(lower)
 
     // Collapse upper and lower Projects if and only if their overlapped expressions are all
@@ -492,6 +535,7 @@ object CollapseProject extends Rule[LogicalPlan] {
     }.exists(!_.deterministic))
   }
 
+  // 合并上下两个 LogicalPlan
   private def buildCleanedProjectList(
       upper: Seq[NamedExpression],
       lower: Seq[NamedExpression]): Seq[NamedExpression] = {
@@ -521,9 +565,20 @@ object CollapseProject extends Rule[LogicalPlan] {
  * 3. For a combination of [[Repartition]] and [[RepartitionByExpression]], collapse as a single
  *    [[RepartitionByExpression]] with the expression and last number of partition.
  */
+// 对多次的 Repartition 操作进行合并，Repartition是一种基于exchange的shuffle操作，操作很重，剪枝很有必要
+//
+// 注意：Repartition操作只针对在DataFrame's上调用coalesce or repartition函数，是无法通过SQL来构造含有Repartition的Plan。
+// SQL中类似的为RepartitionByExpression，但是它不适合这个规则
+// 比如：select * from (select * from t distribute by a) distribute by a
+// 会产生两次RepartitionByExpression操作。
+// == Optimized Logical Plan ==
+// RepartitionByExpression [a#391]
+//     +- RepartitionByExpression [a#391]
+//     +- MetastoreRelation default, t
 object CollapseRepartition extends Rule[LogicalPlan] {
   def apply(plan: LogicalPlan): LogicalPlan = plan transformUp {
     // Case 1
+    // 连续两次两次 Repartition， 以最外层的参数为准
     case Repartition(numPartitions, shuffle, Repartition(_, _, child)) =>
       Repartition(numPartitions, shuffle, child)
     // Case 2
@@ -591,6 +646,7 @@ object InferFiltersFromConstraints extends Rule[LogicalPlan] with PredicateHelpe
 /**
  * Combines all adjacent [[Union]] operators into a single [[Union]].
  */
+// 针对多个 Union 操作进行合并，就是把相邻的 Union 合并
 object CombineUnions extends Rule[LogicalPlan] {
   def apply(plan: LogicalPlan): LogicalPlan = plan transformDown {
     case u: Union => flattenUnion(u, false)
@@ -618,6 +674,9 @@ object CombineUnions extends Rule[LogicalPlan] {
  * Combines two adjacent [[Filter]] operators into one, merging the non-redundant conditions into
  * one conjunctive predicate.
  */
+// 连续的 Filter操作合并。针对连续多次Filter进行语义合并，即AND合并
+// 实例：select a from (select a from t where a > 10) where a>20 --> select a from t where a > 10 and a>20
+// 实例：select a as c from (select a from t where a > 10) --> select a as c from t where a > 10
 object CombineFilters extends Rule[LogicalPlan] with PredicateHelper {
   def apply(plan: LogicalPlan): LogicalPlan = plan transform {
     case Filter(fc, nf @ Filter(nc, grandChild)) =>
@@ -648,6 +707,16 @@ object EliminateSorts extends Rule[LogicalPlan] {
  * 2) by substituting a dummy empty relation when the filter will always evaluate to `false`.
  * 3) by eliminating the always-true conditions given the constraints on the child's output.
  */
+// 对Filter LogicalPlan 所持有的 Expression 进行剪枝和优化
+//
+// 如果Filter逻辑判断整体结果为True，那么是可以删除这个Filter表达式
+// 实例：select * from t where true or a>10 --> select * from t
+//
+// 如果Filter逻辑判断整体结果为False或者NULL，可以把整个plan返回data设置为Seq.empty，Scheme保持不变。
+// 实例：select a from t where false --> LocalRelation <empty>, [a#655]
+//
+// 对于f @ Filter(fc, p: LogicalPlan)，如果fc中判断条件在Child Plan的约束下，肯定为Ture，那么就可以移除这个Filter判断，即Filter表达式与父表达式重叠。
+// 实例：select b from (select b from t where a/b>10 and b=2) where b=2 --> select b from (select b from t where a/b>10 and b=2)
 object PruneFilters extends Rule[LogicalPlan] with PredicateHelper {
   def apply(plan: LogicalPlan): LogicalPlan = plan transform {
     // If the filter condition always evaluate to true, remove the filter.
@@ -663,11 +732,16 @@ object PruneFilters extends Rule[LogicalPlan] with PredicateHelper {
         splitConjunctivePredicates(fc).partition { cond =>
           cond.deterministic && p.constraints.contains(cond)
         }
+      // 这里把 Filter 的 expressions 拆成了两部分
+      // prunedPredicates：Filter 中 expressions 在 孩子LogicalPlan 中重叠的部分
+      // remainingPredicates：孩子LogicalPlan 中的约束条件表达式 不重叠的部分
       if (prunedPredicates.isEmpty) {
-        f
+        f  // 如果没有约束重叠，直接还是原来的f
       } else if (remainingPredicates.isEmpty) {
-        p
+        p  // 如果 remainingPredicates 是空，说明没有不重叠的部分，也就是都重叠，那么直接干掉这个 Filter，因为这个Filter 没啥意义
       } else {
+         // 如果既有重叠也有不重叠，那么就要把不重叠的部分部分抽出来
+         // 然后重新构造 Filter 的 表达式部分
         val newCond = remainingPredicates.reduce(And)
         Filter(newCond, p)
       }
@@ -681,6 +755,18 @@ object PruneFilters extends Rule[LogicalPlan] with PredicateHelper {
  *
  * This heuristic is valid assuming the expression evaluation cost is minimal.
  */
+// 对于Filter操作，原则上它处于越底层越好，他可以显著减小后面计算的数据量。谓词下推
+//
+// filter @ Filter(condition, project @ Project(fields, grandChild))
+// 实例：select rand(),a from (select * from t) where a>1 --> select rand(),a from t where a>1 //如果Project包含nondeterministic
+// 实例：select rand(),a,id from (select *,spark_partition_id() as id from t) where a>1; //是无法进行这个优化。
+//
+// filter @ Filter(condition, aggregate: Aggregate) 对于Aggregate,Filter下移作用很明显。但不是所有的filter都可以下移，有些filter需要依赖整个aggregate最终的运行结果。如下所示
+// 实例：select a,d from (select count(a) as d, a from t group by a) where a>1 and d>10 对于a>1和d>10两个Filter，显然a>1是可以下移一层，从而可以减小group by数据量。
+// 而d>10显然不能，因此它优化以后的结果为 select a,d from (select count(a) as d, a from t where a>1 group by a) where d>10
+//
+// filter @ Filter(condition, union: Union)原理一样还有大部分的一元操作，比如Limit，都可以尝试把Filter下移，来进行优化。
+// 实例：select * from (select * from t limit 10) where a>10
 object PushDownPredicate extends Rule[LogicalPlan] with PredicateHelper {
   def apply(plan: LogicalPlan): LogicalPlan = plan transform {
     // SPARK-13473: We can't push the predicate down when the underlying projection output non-
@@ -968,6 +1054,12 @@ object PushPredicateThroughJoin extends Rule[LogicalPlan] with PredicateHelper {
  * Combines two adjacent [[Limit]] operators into one, merging the
  * expressions into one single expression.
  */
+// 临近的 Limit 操作的 合并。针对GlobalLimit，LocalLimit，Limit三个，如果连续多次，会选择最小的一次limit来进行合并
+// 实例：select * from (select * from t limit 10) limit 5 --> select * from t limit 5
+// 实例：select * from (select * from t limit 5) limit 10 --> select * from t limit 5
+//
+// case 中，两次的 limit 操作对应的 LogicalPlan 并不联在一起，所以不是直接 合并的
+// 但是两个 Project 会进行合并，然后 Limit 操作就
 object CombineLimits extends Rule[LogicalPlan] {
   def apply(plan: LogicalPlan): LogicalPlan = plan transform {
     case GlobalLimit(le, GlobalLimit(ne, grandChild)) =>
@@ -1069,6 +1161,11 @@ object DecimalAggregates extends Rule[LogicalPlan] {
  *
  * This is relatively simple as it currently handles only a single case: Project.
  */
+ // 将Project中的每个无需数据交换的表达式应用于LocalRelation中的相应元素，
+ // 例如select a + 1 from tb1转为一个属性名为“a+1”的relation，并且tb1.a的每个值都是加过1的
+ // 而且 tb1 也是一个 LocalRelation
+ // 优化之前，有 Project 和 LocalRelation 两层 LogicalPlan
+ // 优化之后，只有 LocalRelation 这一层 LogicalPlan
 object ConvertToLocalRelation extends Rule[LogicalPlan] {
   def apply(plan: LogicalPlan): LogicalPlan = plan transform {
     case Project(projectList, LocalRelation(output, data))
@@ -1089,6 +1186,7 @@ object ConvertToLocalRelation extends Rule[LogicalPlan] {
  *   SELECT DISTINCT f1, f2 FROM t  ==>  SELECT f1, f2 FROM t GROUP BY f1, f2
  * }}}
  */
+// 用 Aggregate LogicalPlan 替换 Distinct LogicalPlan
 object ReplaceDistinctWithAggregate extends Rule[LogicalPlan] {
   def apply(plan: LogicalPlan): LogicalPlan = plan transform {
     case Distinct(child) => Aggregate(child.output, child.output, child)
@@ -1107,6 +1205,7 @@ object ReplaceDistinctWithAggregate extends Rule[LogicalPlan] {
  * 2. This rule has to be done after de-duplicating the attributes; otherwise, the generated
  *    join conditions will be incorrect.
  */
+// 用LEFT SemiJoin操作来替换“Intersect distinct”操作，注意不针对"Intersect all"
 object ReplaceIntersectWithSemiJoin extends Rule[LogicalPlan] {
   def apply(plan: LogicalPlan): LogicalPlan = plan transform {
     case Intersect(left, right) =>
@@ -1128,6 +1227,7 @@ object ReplaceIntersectWithSemiJoin extends Rule[LogicalPlan] {
  * 2. This rule has to be done after de-duplicating the attributes; otherwise, the generated
  *    join conditions will be incorrect.
  */
+// LeftAnti join 操作来替换“except distinct”操作，注意不针对"except all"
 object ReplaceExceptWithAntiJoin extends Rule[LogicalPlan] {
   def apply(plan: LogicalPlan): LogicalPlan = plan transform {
     case Except(left, right) =>
@@ -1141,6 +1241,7 @@ object ReplaceExceptWithAntiJoin extends Rule[LogicalPlan] {
  * Removes literals from group expressions in [[Aggregate]], as they have no effect to the result
  * but only makes the grouping key bigger.
  */
+// 去除 group 表达式中的 字面量，因为不会对结果造成影响
 object RemoveLiteralFromGroupExpressions extends Rule[LogicalPlan] {
   def apply(plan: LogicalPlan): LogicalPlan = plan transform {
     case a @ Aggregate(grouping, _, _) if grouping.nonEmpty =>
@@ -1160,6 +1261,7 @@ object RemoveLiteralFromGroupExpressions extends Rule[LogicalPlan] {
  * Removes repetition from group expressions in [[Aggregate]], as they have no effect to the result
  * but only makes the grouping key bigger.
  */
+// 去除 group by 中相同的表达式
 object RemoveRepetitionFromGroupExpressions extends Rule[LogicalPlan] {
   def apply(plan: LogicalPlan): LogicalPlan = plan transform {
     case a @ Aggregate(grouping, _, _) =>

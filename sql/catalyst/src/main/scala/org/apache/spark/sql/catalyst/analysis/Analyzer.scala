@@ -101,11 +101,11 @@ class Analyzer(
       // 这下面的 Rule 很多都是针对 LogicalPlan 进行解析
       ResolveTableValuedFunctions ::  // 解析可以作为 table 的函数，例如 range，这个也不在 本文件里
       ResolveRelations ::  // 解析 relation，或者说叫做解析 table
-      ResolveReferences ::  // 解析 列
-      ResolveCreateNamedStruct ::  // 解析结构体的创建
-      ResolveDeserializer ::  // 解析反序列化操作类
-      ResolveNewInstance ::  // 解析新的实例
-      ResolveUpCast ::  // 解析类型转换
+      ResolveReferences ::  // 解析 attribute，也不完全是解析 列 吧
+      ResolveCreateNamedStruct ::  // 解析结构体的创建，没看
+      ResolveDeserializer ::  // 解析反序列化操作类，没看
+      ResolveNewInstance ::  // 解析新的实例，没看
+      ResolveUpCast ::  // 解析类型转换，没有看的特别细
       ResolveGroupingAnalytics ::  // 解析多维分析
       ResolvePivot ::  // 解析 Pivot 算子
       ResolveOrdinalInOrderByAndGroupBy ::  // 解析下标聚合
@@ -312,6 +312,9 @@ class Analyzer(
   }
 
   object ResolveGroupingAnalytics extends Rule[LogicalPlan] {
+
+    // 下面两个 bitmasks 用的是 掩码 的思想，或者说类似 Linux 中的权限标记
+    // 是把 ROLLUP 或者 CUBE 展开成 对应的 GROUPING SETS
     /*
      *  GROUP BY a, b, c WITH ROLLUP
      *  is equivalent to
@@ -344,6 +347,7 @@ class Analyzer(
       }.isDefined
     }
 
+    //判断表达式中有没有递归的包含 Grouping 或者 GroupingID 方法
     private[analysis] def hasGroupingFunction(e: Expression): Boolean = {
       e.collectFirst {
         case g: Grouping => g
@@ -383,12 +387,15 @@ class Analyzer(
         failAnalysis(
           s"${VirtualColumn.hiveGroupingIdName} is deprecated; use grouping_id() instead")
 
+      // Cube 或者 Rollup 的 Group By ，转换成 GroupingSets
+      // 利用 掩码 的思想，类似 Linux 中的权限，用每一个 bit 的 0 和 1 表示有没有用到 某个 attribute 进行 group
       case Aggregate(Seq(c @ Cube(groupByExprs)), aggregateExpressions, child) =>
         GroupingSets(bitmasks(c), groupByExprs, child, aggregateExpressions)
       case Aggregate(Seq(r @ Rollup(groupByExprs)), aggregateExpressions, child) =>
         GroupingSets(bitmasks(r), groupByExprs, child, aggregateExpressions)
 
       // Ensure all the expressions have been resolved.
+      // group set
       case x: GroupingSets if x.expressions.forall(_.resolved) =>
         val gid = AttributeReference(VirtualColumn.groupingIdName, IntegerType, false)()
 
@@ -457,6 +464,9 @@ class Analyzer(
         s.copy(order = newOrder)
     }
 
+    // Filter 或者 Sort 的 表达式，递归的包含 Grouping 或者 Grouping_ID 函数
+    // 那么就要把这些表达式找出来
+    // 没太细看。。。。
     private def findGroupingExprs(plan: LogicalPlan): Seq[Expression] = {
       plan.collectFirst {
         case a: Aggregate =>
@@ -603,7 +613,10 @@ class Analyzer(
      * Generate a new logical plan for the right child with different expression IDs
      * for all conflicting attributes.
      */
+    // 对于 JOIN 或者 Intersect 这种，左右两个 LogicalPlan 可能存在重复名字的 字段，但是他们的id 是不一样的
+    // 具体内部逻辑没有细看
     private def dedupRight (left: LogicalPlan, right: LogicalPlan): LogicalPlan = {
+      // 先获得 左右两个 LogicalPlan 里 名称相同的字段
       val conflictingAttributes = left.outputSet.intersect(right.outputSet)
       logDebug(s"Conflicting attributes ${conflictingAttributes.mkString(",")} " +
         s"between $left and $right")
@@ -677,14 +690,19 @@ class Analyzer(
 
 
       // If the aggregate function argument contains Stars, expand it.
+      //  例如 select id, count(*) from students group by id;
+      // a.aggregateExpressions 返回的是 id 和 count(*) 对应的 Expression 的 list
       case a: Aggregate if containsStar(a.aggregateExpressions) =>
+        // a.groupingExpressions 返回的是 group by 那一部分，看看有没有 UnresolvedOrdinal，就是用数字替代具体字段
         if (a.groupingExpressions.exists(_.isInstanceOf[UnresolvedOrdinal])) {
           failAnalysis(
             "Star (*) is not allowed in select list when GROUP BY ordinal position is used")
         } else {
           a.copy(aggregateExpressions = buildExpandedProjectList(a.aggregateExpressions, a.child))
         }
+
       // If the script transformation input contains Stars, expand it.
+      // 用脚本执行的 ，具体没有细看
       case t: ScriptTransformation if containsStar(t.input) =>
         t.copy(
           input = t.input.flatMap {
@@ -692,10 +710,13 @@ class Analyzer(
             case o => o :: Nil
           }
         )
+
+      // Generate 里不能有 *
       case g: Generate if containsStar(g.generator.children) =>
         failAnalysis("Invalid usage of '*' in explode/json_tuple/UDTF")
 
       // To resolve duplicate expression IDs for Join and Intersect
+      // 对于 JOIN 或者 Intersect 这种，左右两个 LogicalPlan 可能存在重复名字的 字段，但是他们的id 是不一样的
       case j @ Join(left, right, _, _) if !j.duplicateResolved =>
         j.copy(right = dedupRight(left, right))
       case i @ Intersect(left, right) if !i.duplicateResolved =>
@@ -705,6 +726,8 @@ class Analyzer(
 
       // When resolve `SortOrder`s in Sort based on child, don't report errors as
       // we still have chance to resolve it based on its descendants
+      // 解析 Sort 这个 LogicalPlan 的 order 语句部分
+      // order by 后面也会跟着字段
       case s @ Sort(ordering, global, child) if child.resolved && !s.resolved =>
         val newOrdering =
           ordering.map(order => resolveExpression(order, child).asInstanceOf[SortOrder])
@@ -714,6 +737,7 @@ class Analyzer(
       // ResolveReferences. Attributes in the output will be resolved by ResolveGenerate.
       case g @ Generate(generator, _, _, _, _, _) if generator.resolved => g
 
+      // Generate 这种 Logical Plan 也就是更新自己的 generator 就行，只有在 generator 里面才有对 字段的使用
       case g @ Generate(generator, join, outer, qualifier, output, child) =>
         val newG = resolveExpression(generator, child, throws = true)
         if (newG.fastEquals(generator)) {
@@ -765,8 +789,9 @@ class Analyzer(
       exprs: Seq[NamedExpression],
       child: LogicalPlan): Seq[NamedExpression] = {
       exprs.flatMap {
-        // 第 1 种情况，直接就是 *
+        // 第 1 种情况，直接就是 *，而且不带 group by
         // Using Dataframe/Dataset API: testData2.groupBy($"a", $"b").agg($"*")
+        // 情况1 和 情况2 的展开都比较简单
         case s: Star => s.expand(child, resolver)
         // 第 2 种情况
         // Using SQL API without running ResolveAlias: SELECT * FROM testData2 group by a, b
@@ -775,6 +800,9 @@ class Analyzer(
         // 参考的是 AstBuilder 中的 转换代码得到的个人理解
         case UnresolvedAlias(s: Star, _) => s.expand(child, resolver)
         // 第 3 种情况
+        // 这个LogicalPlan 的 Expression 里头包含有 *
+        // 比如 select table1.field1, table1.field2, table2.* from xxxxx 这种
+        // table2.* 就符合 这一类 Expression
         case o if containsStar(o :: Nil) => expandStarExpression(o, child) :: Nil
         // 第 4 种情况
         case o => o :: Nil
@@ -792,7 +820,12 @@ class Analyzer(
     /**
      * Expands the matching attribute.*'s in `child`'s output.
      */
+    // 拓展  attribute.* 这一类的 Expression
+    // expr 是这个 LogicalPlan 的其中一个 Expression，比如 attribute.* 对应的Expression
+    // child 是这个 LogicalPlan 的 孩子 Plan
+    // 这个方法具体实现没怎么看懂
     def expandStarExpression(expr: Expression, child: LogicalPlan): Expression = {
+      // 后序遍历
       expr.transformUp {
         case f1: UnresolvedFunction if containsStar(f1.children) =>
           f1.copy(children = f1.children.flatMap {
@@ -826,6 +859,10 @@ class Analyzer(
     exprs.exists(_.find(_.isInstanceOf[UnresolvedDeserializer]).isDefined)
   }
 
+  // expr：该LogicalPlan 持有的 某个 expression
+  // plan： 该LogicalPlan 的 孩子 LogicalPlan
+  // 后序遍历，递归的解析 该 LogicalPlan 自己的 expression，因为 expression 也是一个 tree
+  // 具体细节也没有看
   protected[sql] def resolveExpression(
       expr: Expression,
       plan: LogicalPlan,
@@ -2253,6 +2290,7 @@ class Analyzer(
   /**
    * Replace the [[UpCast]] expression by [[Cast]], and throw exceptions if the cast may truncate.
    */
+  // 也就是把  UpCast 这种 Expression 转成了 Cast
   object ResolveUpCast extends Rule[LogicalPlan] {
     private def fail(from: Expression, to: DataType, walkedTypePath: Seq[String]) = {
       throw new AnalysisException(s"Cannot up cast ${from.sql} from " +
@@ -2273,6 +2311,7 @@ class Analyzer(
       case p if p.resolved => p
 
       case p => p transformExpressions {
+        // 要保证孩子已经resolved
         case u @ UpCast(child, _, _) if !child.resolved => u
 
         case UpCast(child, dataType, walkedTypePath) => (child.dataType, dataType) match {

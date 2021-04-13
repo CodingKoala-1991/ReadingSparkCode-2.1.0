@@ -59,6 +59,7 @@ class QueryExecution(val sparkSession: SparkSession, val logical: LogicalPlan) {
     }
   }
 
+  // AST -> Unresolved LogicalPlan Tree
   lazy val analyzed: LogicalPlan = {
     SparkSession.setActiveSession(sparkSession)
     // 借助 Analyzer 开始对 LogicalPlan 的 Tree 进行解析

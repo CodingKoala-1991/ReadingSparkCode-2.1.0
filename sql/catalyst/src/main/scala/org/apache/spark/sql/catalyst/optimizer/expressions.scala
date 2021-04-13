@@ -38,6 +38,7 @@ import org.apache.spark.sql.types._
  * Replaces [[Expression Expressions]] that can be statically evaluated with
  * equivalent [[Literal]] values.
  */
+// 将可以静态直接求值的表达式直接求出常量，Add(1,2)==>3
 object ConstantFolding extends Rule[LogicalPlan] {
   def apply(plan: LogicalPlan): LogicalPlan = plan transform {
     case q: LogicalPlan => q transformExpressionsDown {
@@ -56,6 +57,9 @@ object ConstantFolding extends Rule[LogicalPlan] {
 /**
  * Reorder associative integral-type operators and fold all constants into one.
  */
+// 将与整型相关的可确定的表达式直接计算出其部分结果，
+// 例如：Add(Add(1,a),2)==>Add(a,3)；与ConstantFolding不同的是，这里的Add或Multiply是不确定的，但是可以尽可能计算出部分结果
+// 如果是 group by 后面跟着的 表达式 则不会被优化？？？
 object ReorderAssociativeOperator extends Rule[LogicalPlan] {
   private def flattenAdd(
     expression: Expression,
@@ -115,6 +119,11 @@ object ReorderAssociativeOperator extends Rule[LogicalPlan] {
  * 2. Replaces [[In (value, seq[Literal])]] with optimized version
  *    [[InSet (value, HashSet[Literal])]] which is much faster.
  */
+// 使用HashSet来优化set in 操作
+// 如果In比较操作符对应的set集合数目超过"spark.sql.optimizer.inSetConversionThreshold"设置的值(默认值为10)，那么Catalyst会自动将set转换为Hashset，提供in操作的性能。
+//
+//实例：select * from t where a in (1,2,3)对应的In操作为Filter a#13 IN (1,2,3)。
+//而select * from t where a in (1,2,3,4,5,6,7,8,9,10,11)为Filter a#19 INSET (5,10,1,6,9,2,7,3,11,8,4)
 case class OptimizeIn(conf: CatalystConf) extends Rule[LogicalPlan] {
   def apply(plan: LogicalPlan): LogicalPlan = plan transform {
     case q: LogicalPlan => q transformExpressionsDown {
@@ -140,9 +149,14 @@ case class OptimizeIn(conf: CatalystConf) extends Rule[LogicalPlan] {
  * 3. Merge same expressions
  * 4. Removes `Not` operator.
  */
+// LogicalPlan 的 Optimizer 的 一条优化规则
+// 简化 Bool 表达式，AND OR 这种组合逻辑进行优化
 object BooleanSimplification extends Rule[LogicalPlan] with PredicateHelper {
   def apply(plan: LogicalPlan): LogicalPlan = plan transform {
+    // 递归向下遍历 LogicalPlan 然后再对 LogicalPlan 的 Expression 进行遍历优化
     case q: LogicalPlan => q transformExpressionsUp {
+      // 简化不需要对两边都进行计算的Bool表达式
+      // 例如 true or a=b-->true
       case TrueLiteral And e => e
       case e And TrueLiteral => e
       case FalseLiteral Or e => e
@@ -153,9 +167,11 @@ object BooleanSimplification extends Rule[LogicalPlan] with PredicateHelper {
       case TrueLiteral Or _ => TrueLiteral
       case _ Or TrueLiteral => TrueLiteral
 
+      // 如果And/OR左右表达式完全相等，就可以删除一个。实例：a+b=1 and a+b=1-->a+b=1
       case a And b if a.semanticEquals(b) => a
       case a Or b if a.semanticEquals(b) => a
 
+      // 转换Not的逻辑。实例：not(a>b)-->a<=b
       case a And (b Or c) if Not(a).semanticEquals(b) => And(a, c)
       case a And (b Or c) if Not(a).semanticEquals(c) => And(a, b)
       case (a Or b) And c if a.semanticEquals(Not(c)) => And(b, c)
@@ -167,12 +183,15 @@ object BooleanSimplification extends Rule[LogicalPlan] with PredicateHelper {
       case (a And b) Or c if b.semanticEquals(Not(c)) => Or(a, c)
 
       // Common factor elimination for conjunction
+      // 两边相同子表达式进行抽离，避免重复计算
+      // 例如 (a=1 and b=2) or (a=1 and b>2) --> (a=1) and (b=2 || b>2)
       case and @ (left And right) =>
         // 1. Split left and right to get the disjunctive predicates,
         //   i.e. lhs = (a, b), rhs = (a, c)
         // 2. Find the common predict between lhsSet and rhsSet, i.e. common = (a)
         // 3. Remove common predict from lhsSet and rhsSet, i.e. ldiff = (b), rdiff = (c)
-        // 4. Apply the formula, get the optimized predicate: common || (ldiff && rdiff)
+        // 4. Apply the formula, get the optimized predicate: common || (ldiff && rdiff)、
+        // splitDisjunctivePredicates方法，接受 一个 Expression，然后根据OR AND 拆成一个 Expression list
         val lhs = splitDisjunctivePredicates(left)
         val rhs = splitDisjunctivePredicates(right)
         val common = lhs.filter(e => rhs.exists(e.semanticEquals))
@@ -193,6 +212,7 @@ object BooleanSimplification extends Rule[LogicalPlan] with PredicateHelper {
         }
 
       // Common factor elimination for disjunction
+      // 几乎同上
       case or @ (left Or right) =>
         // 1. Split left and right to get the conjunctive predicates,
         //   i.e.  lhs = (a, b), rhs = (a, c)
@@ -218,6 +238,8 @@ object BooleanSimplification extends Rule[LogicalPlan] with PredicateHelper {
           }
         }
 
+
+      // 转换Not的逻辑。实例：not(a>b)-->a<=b
       case Not(TrueLiteral) => FalseLiteral
       case Not(FalseLiteral) => TrueLiteral
 
@@ -242,6 +264,7 @@ object BooleanSimplification extends Rule[LogicalPlan] with PredicateHelper {
  * 2) Replace '=', '<=', and '>=' with 'true' literal if both operands are non-nullable.
  * 3) Replace '<' and '>' with 'false' literal if both operands are non-nullable.
  */
+// 针对>=,<=,==等运算，如果两边表达式semanticEquals相等，即可以他们进行简化。
 object SimplifyBinaryComparison extends Rule[LogicalPlan] with PredicateHelper {
   def apply(plan: LogicalPlan): LogicalPlan = plan transform {
     case q: LogicalPlan => q transformExpressionsUp {
@@ -263,6 +286,20 @@ object SimplifyBinaryComparison extends Rule[LogicalPlan] with PredicateHelper {
 /**
  * Simplifies conditional expressions (if / case).
  */
+// 简化IF/Case语句逻辑，即删除无用的Case/IF语句，处理的是 Expression
+//
+// 对于If(predicate, trueValue, falseValue)，
+// 如果predicate为常量Ture/False/Null，是可以直接删除掉IF语句。
+// 不过SQL显式是没有IF这个函数的，但是Catalyst中有很多逻辑是会生成这个IF表达式。
+// case If(TrueLiteral, trueValue, _) => trueValue
+// case If(FalseLiteral, _, falseValue) => falseValue
+// case If(Literal(null, _), _, falseValue) => falseValue
+//
+// 对于CaseWhen(branches, _)，如果branches数组中第一个元素就为True，那么实际不需要进行后续case比较，直接选择第一个case的对应的结果就可以
+// 实例：select a, (case when true then "1" when false then "2" else "3" end) as c from t --> select a, "1" as c from t
+//
+// 对于CaseWhen(branches, _)，如果中间有when的值为False或者NULL常量，是可以直接删除掉这个表达式的。
+// 实例：select a, (case when b=2 then "1" when false then "2" else "3" end) as c from t --> select a, (case when b=2 then "1" else "3" end) as c from t。//when false then "2"会被直接简化掉。
 object SimplifyConditionals extends Rule[LogicalPlan] with PredicateHelper {
   private def falseOrNullLiteral(e: Expression): Boolean = e match {
     case FalseLiteral => true
@@ -303,6 +340,7 @@ object SimplifyConditionals extends Rule[LogicalPlan] with PredicateHelper {
  * For example, when the expression is just checking to see if a string starts with a given
  * pattern.
  */
+// 简化正则匹配计算。针对前缀，后缀，包含，相等四种正则表达式，可以将Like操作转换为普通的字符串比较。
 object LikeSimplification extends Rule[LogicalPlan] {
   // if guards below protect from escapes on trailing %.
   // Cases like "something\%" are not optimized, but this does not affect correctness.
@@ -340,6 +378,7 @@ object LikeSimplification extends Rule[LogicalPlan] {
  * equivalent [[Literal]] values. This rule is more specific with
  * Null value propagation from bottom to top of the expression tree.
  */
+// 对NULL常量参与表达式计算进行优化。与True/False相似，如果NULL常量参与计算，那么可以直接把结果设置为NULL，或者简化计算表达式。
 object NullPropagation extends Rule[LogicalPlan] {
   private def nonNullLiteral(e: Expression): Boolean = e match {
     case Literal(null, _) => false
@@ -501,6 +540,7 @@ object FoldablePropagation extends Rule[LogicalPlan] {
 /**
  * Optimizes expressions by replacing according to CodeGen configuration.
  */
+// 用生成的代码替换 表达式，主要针对 CASE WHEN 这种表达式，分支不超过上限，就会触发优化，Spark 2.3 之后这个才比较完善
 case class OptimizeCodegen(conf: CatalystConf) extends Rule[LogicalPlan] {
   def apply(plan: LogicalPlan): LogicalPlan = plan transformAllExpressions {
     case e: CaseWhen if canCodegen(e) => e.toCodegen()
@@ -516,6 +556,7 @@ case class OptimizeCodegen(conf: CatalystConf) extends Rule[LogicalPlan] {
 /**
  * Removes [[Cast Casts]] that are unnecessary because the input is already the correct type.
  */
+// 删除无用的cast转换。如果cast前后数据类型没有变化，即可以删除掉cast操作
 object SimplifyCasts extends Rule[LogicalPlan] {
   def apply(plan: LogicalPlan): LogicalPlan = plan transformAllExpressions {
     case Cast(e, dataType) if e.dataType == dataType => e
@@ -532,6 +573,7 @@ object SimplifyCasts extends Rule[LogicalPlan] {
 /**
  * Removes nodes that are not necessary.
  */
+ // 这个规则仅仅去掉没必要的节点，包括两类：UnaryPositive和PromotePrecision，二者仅仅是对子表达式的封装，并无额外操作
 object RemoveDispensableExpressions extends Rule[LogicalPlan] {
   def apply(plan: LogicalPlan): LogicalPlan = plan transformAllExpressions {
     case UnaryPositive(child) => child
@@ -544,6 +586,7 @@ object RemoveDispensableExpressions extends Rule[LogicalPlan] {
  * Removes the inner case conversion expressions that are unnecessary because
  * the inner conversion is overwritten by the outer one.
  */
+// 简化字符串的大小写转换函数。如果对字符串进行连续多次的Upper/Lower操作，只需要保留最后一次转换即可。
 object SimplifyCaseConversionExpressions extends Rule[LogicalPlan] {
   def apply(plan: LogicalPlan): LogicalPlan = plan transform {
     case q: LogicalPlan => q transformExpressionsUp {

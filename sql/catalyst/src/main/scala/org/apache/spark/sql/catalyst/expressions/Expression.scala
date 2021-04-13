@@ -82,6 +82,8 @@ abstract class Expression extends TreeNode[Expression] {
    * By default leaf expressions are deterministic as Nil.forall(_.deterministic) returns true.
    */
   // 执行 eval方法 返回的结果，是否是确定性的，由这个 Expression 的所有孩子的 确定性deterministic 来决定
+  // 对于相同的输入是否一直返回相同的输出。
+  // 对于分布式环境来说，很多都是不稳定的
   def deterministic: Boolean = children.forall(_.deterministic)
 
   // 是否有可能输出空值

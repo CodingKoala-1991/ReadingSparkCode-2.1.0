@@ -40,6 +40,8 @@ abstract class PlanExpression[T <: QueryPlan[_]] extends Expression {
 /**
  * A base interface for expressions that contain a [[LogicalPlan]].
  */
+//  SubqueryExpression 是包含 LogicalPlan 的 Expression
+// 例如 SELECT * FROM a WHERE   a.id IN (SELECT id FROM b)，就是 IN 这个表达式里包含了一个 LogicalPlan
 abstract class SubqueryExpression extends PlanExpression[LogicalPlan] {
   override def withNewPlan(plan: LogicalPlan): SubqueryExpression
 }
