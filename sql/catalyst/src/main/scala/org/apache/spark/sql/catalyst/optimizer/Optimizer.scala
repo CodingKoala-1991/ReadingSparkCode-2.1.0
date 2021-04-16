@@ -45,6 +45,10 @@ abstract class Optimizer(sessionCatalog: SessionCatalog, conf: CatalystConf)
 
   protected val fixedPoint = FixedPoint(conf.optimizerMaxIterations)
 
+  //  SparkOptimizer 这个class 里面还有几条 优化的 batch！！！！！！！！！！！！！！！！！！！！！
+  // 比如：
+  // PruneFileSourcePartitions：对数据文件中分区进行剪裁，尽可能不要读入无关分区，没有细看，但是大概应该是用 属性 和 catalog 进行结合然后过滤无效分区
+
   def batches: Seq[Batch] = {
     // Technically some of the rules in Finish Analysis are not optimizer rules and belong more
     // in the analyzer, because they are needed for correctness (e.g. ComputeCurrentTime).
@@ -55,7 +59,8 @@ abstract class Optimizer(sessionCatalog: SessionCatalog, conf: CatalystConf)
       ReplaceExpressions,  // 查找所有不可计算的表达式，并用可计算的语义等效表达式替换/重写它们，没有细看
       ComputeCurrentTime,  // 在优化阶段对current_database(), current_date(), current_timestamp()函数直接计算出值。
       GetCurrentDatabase(sessionCatalog),  // 在优化阶段对current_database(), current_date(), current_timestamp()函数直接计算出值。
-      RewriteDistinctAggregates) ::  // ？？？？？？？？？？
+      RewriteDistinctAggregates) ::  // 没细看
+                                     // https://zhuanlan.zhihu.com/p/74519963 里面有关于这个 的一个例子
     //////////////////////////////////////////////////////////////////////////////////////////
     // Optimizer rules start here
     //////////////////////////////////////////////////////////////////////////////////////////
@@ -78,24 +83,38 @@ abstract class Optimizer(sessionCatalog: SessionCatalog, conf: CatalystConf)
       RemoveRepetitionFromGroupExpressions) ::  // 去除 group by 中相同的表达式
     Batch("Operator Optimizations", fixedPoint,
       // Operator push down
-      PushProjectionThroughUnion,// ？？？？？？？？？？
-      ReorderJoin,// ？？？？？？？？？？
-      EliminateOuterJoin,// ？？？？？？？？？？
-      PushPredicateThroughJoin,// ？？？？？？？？？？
-      PushDownPredicate,// ？？？？？？？？？？
+      PushProjectionThroughUnion,  // 将 Project 下推到 Union
+                                   // 在 Union 的时候，有一些字段最终是不需要的，提前select 出来，可以减少数据量
+      ReorderJoin,  // 把所有的条件表达式分配到join的子树中，使每个子树至少有一个条件表达式。
+                    // 重排序的顺序依据条件顺序，
+                    // 例如：select * from tb1,tb2,tb3 where tb1.a=tb3.c and tb3.b=tb2.b，
+                    // 那么join的顺序就是join(tb1,tb3,tb1.a=tb3.c)，join(tb3,tb2,tb3.b=tb2.b)
+                    // 说白了就是 Filter 的 condition 和 Join 的 condition 自底向上 交替出现
+                    // 然后对这种特殊的结构 进行下推优化
+      EliminateOuterJoin,   // 把 OUTER JOIN 转为等价的 非 OUTER Join，可以减少数据量。但是我没怎么看懂
+      PushPredicateThroughJoin,  // 谓词下推到 Join 算子，该优化规则是将Filter中的条件下移到Join算子中
+      PushDownPredicate,  // 谓词下推，上面那个是 谓词下推到Join，不一样
+                          // 谓词下推到 Join，是说把 Filter 下推到 left 或者 right 的 LogicalPlan
+                          // 谓词下推，就是把 Filter 下推到 子LogicalPlan
       LimitPushDown,  // Limit 下推，可以减小Child操作返回不必要的字段条目，针对 Union 和 Join
       ColumnPruning,  // 字段剪枝，即删除Child无用的的output字段
-      InferFiltersFromConstraints,// ？？？？？？？？？？
+      InferFiltersFromConstraints,  // 是将总的Filter中相对于子树约束多余的约束删除掉，只支持inter join和leftsemi join
+                                    // 例如：select * from (select * from tb1 where a) as x, (select * from tb2 where b) as y where a, b
+                                    // ==>
+                                    // select * from (select * from tb1 where a) as x, (select * from tb2 where b) as y
       // Operator combine
       CollapseRepartition,  // 对多次的 Repartition 操作进行合并，Repartition是一种基于exchange的shuffle操作，操作很重，剪枝很有必要
       CollapseProject,  // 针对 Project 这种 LogicalPlan 进行合并。将Project与子Project或子Aggregate进行合并。是一种剪枝操作
-      CollapseWindow,// ？？？？？？？？？？
+      CollapseWindow,  // 如果相邻的 两个 Window LogicalPlan，他们的 order by 和 partition by 都相同，那么就可以把 window 的 expression 合并到一起，然后合并两个 Window LogicalPlan
       CombineFilters,  // Filter操作合并。针对连续多次Filter进行语义合并，即AND合并
       CombineLimits,  // Limit 操作的 合并。针对GlobalLimit，LocalLimit，Limit三个，如果连续多次，会选择最小的一次limit来进行合并。
       CombineUnions,  // 针对多个 Union 操作进行合并，就是把相邻的 Union 合并
       // Constant folding and strength reduction
       NullPropagation,  // 对NULL常量参与表达式计算进行优化。与True/False相似，如果NULL常量参与计算，那么可以直接把结果设置为NULL，或者简化计算表达式。
-      FoldablePropagation,// ？？？？？？？？？？
+      FoldablePropagation, // 提取可以直接计算的表达式，然后替换别名
+                           //    SELECT 1.0 x, 'abc' y, Now() z ORDER BY x, y, 3 ==>  SELECT 1.0 x, 'abc' y, Now() z ORDER BY 1.0, 'abc', Now()
+                           // 例如上面样例，x y z 3 这些别名，其实背后都对应了 一个可以直接执行 （foldable） 的 Expression
+                           // 那么这个优化策略就是要把这些 别名替换掉，变成可以直接运行的值
       OptimizeIn(conf),  // 使用HashSet来优化set 的 in 操作
       ConstantFolding,  // 将可以静态直接求值的表达式直接求出常量，Add(1,2)==>3
       ReorderAssociativeOperator,  // 将与整型相关的可确定的表达式直接计算出其部分结果，例如：Add(Add(1,a),2)==>Add(a,3)；与ConstantFolding不同的是，这里的Add或Multiply是不确定的，但是可以尽可能计算出部分结果
@@ -105,16 +124,36 @@ abstract class Optimizer(sessionCatalog: SessionCatalog, conf: CatalystConf)
       RemoveDispensableExpressions,  // 这个规则仅仅去掉没必要的 LogicalPlan，包括两类：UnaryPositive和PromotePrecision，二者仅仅是对子表达式的封装，并无额外操作
       SimplifyBinaryComparison,  // 针对>=,<=,==等运算，如果两边表达式semanticEquals相等，即可以他们进行简化。
       PruneFilters,  // 对Filter LogicalPlan 所持有的 Expression 进行剪枝和优化，因为有一些约束可能在 孩子 LogicalPlan 中就已经体现
-      EliminateSorts,// ？？？？？？？？？？
+      EliminateSorts,  // 如果 Sort LogicalPlan 中的  orders（就是 order by 后面的 若干个 expression）是空的，那么就去除这个 Sort LogicalPlan
       SimplifyCasts,  // 删除无用的cast转换。如果cast前后数据类型没有变化，即可以删除掉cast操作
       SimplifyCaseConversionExpressions,  // 简化字符串的大小写转换函数。如果对字符串进行连续多次的Upper/Lower操作，只需要保留最后一次转换即可。
-      RewriteCorrelatedScalarSubquery,// ？？？？？？？？？？
-      EliminateSerialization,// ？？？？？？？？？？
-      RemoveAliasOnlyProject) ::  // ？？？？？？？？？？
+      RewriteCorrelatedScalarSubquery,  // ScalarSubquery指的是只返回一个元素（一行一列）的 Expression
+                                        // 如果Filter，Project，Aggregate操作中包含相应的ScalarSubquery，就重写之，
+                                        // 思想就是因为ScalarSubquery结果很小，可以过滤大部分无用元素，所以优先使用left OUTER join过滤：
+                                        // Aggregate操作，max(a) 就是一个 返回单行单列结果 的 Expression
+                                        // 例如select max(a), b from tb1 group by max(a)
+                                        // ==>
+                                        // select max(a), b from tb1 left OUTER join max(a) group by max(a)，这样先做join，效率要比先做group by操作效率高
+                                        //
+                                        // Project操作，
+                                        // 例如select max(a), b from tb1
+                                        // ==>
+                                        // select max(a), b from tb1 left OUTER join max(a)
+                                        //
+                                        // Filter，
+                                        // 例如select b from tb1 where max(a)
+                                        // ==>
+                                        // select b (select * from tb1 left OUTER join max(a) where max(a))
+      EliminateSerialization,// 消除序列化，没有细看
+      RemoveAliasOnlyProject) ::  // 消除仅仅由子查询的输出的别名构成的Project，例如：select a from (select a from t) ==> select a from t
+                                  // 例如顶层的 select a 构成了一个 Project，但是这个 Project select 的数据全部来自 子查询的输出
+                                  // 因此干掉这个 顶层的 Project
+                                  // 实际情况中，被干掉的 Project 不一定位于最顶层，注释里写了
     Batch("Check Cartesian Products", Once,
-      CheckCartesianProducts(conf)) ::  // ？？？？？？？？？？
+      CheckCartesianProducts(conf)) ::  // 检查 LogicalPlan tree 中是否包含 笛卡尔积 类型的 Join 操作。如果存在这样的操作，但是在sql语句中又没有显示的使用 cross join，那么就会抛出异常
+                                        // 所以这个检查必须在 ReorderJoin 之后执行
     Batch("Decimal Optimizations", fixedPoint,
-      DecimalAggregates) ::  // ？？？？？？？？？？
+      DecimalAggregates) ::  // 用于处理聚合操作中 和 Decimal 类型相关的问题。在聚合查询中，如果涉及浮点数的精度处理，性能有影响。固定精度的 Decimal 类型，可以加速聚合操作的速度
     Batch("Typed Filter Optimization", fixedPoint,
       CombineTypedFilters) ::  // 对 TypedFilter 进行合并，我理解TypedFilter 不是 SparkSQL 中的优化策略，是 DF 中的，就是 dataFrame.filter(func)，这个时候的filter 就变成了 CombineTypedFilters
     Batch("LocalRelation", fixedPoint,
@@ -127,7 +166,7 @@ abstract class Optimizer(sessionCatalog: SessionCatalog, conf: CatalystConf)
     Batch("OptimizeCodegen", Once,
       OptimizeCodegen(conf)) ::  // 用生成的代码替换 表达式，主要针对 CASE WHEN 这种表达式，分支不超过上限，就会触发优化，Spark 2.3 之后这个才比较完善
     Batch("RewriteSubquery", Once,
-      RewritePredicateSubquery,  // ？？？？？？？？？？
+      RewritePredicateSubquery,  // 将EXISTS/NOT EXISTS改为left semi/anti join形式，将IN/NOT IN也改为left semi/anti join形式
       CollapseProject) :: Nil  // 针对 Project 这种 LogicalPlan 进行合并。将Project与子Project或子Aggregate进行合并。是一种剪枝操作
   }
 
@@ -163,6 +202,9 @@ class SimpleTestOptimizer extends Optimizer(
  * It is created mainly for removing extra Project added in EliminateSerialization rule,
  * but can also benefit other operators.
  */
+// 消除仅仅由子查询的输出的别名构成的Project，例如：select a from (select a from t) ==> select a from t
+// 例如顶层的 select a 构成了一个 Project，但是这个 Project select 的数据全部来自 子查询的输出
+// 因此干掉这个 顶层的 Project
 object RemoveAliasOnlyProject extends Rule[LogicalPlan] {
   /**
    * Returns true if the project list is semantically same as child output, after strip alias on
@@ -193,17 +235,27 @@ object RemoveAliasOnlyProject extends Rule[LogicalPlan] {
   }
 
   def apply(plan: LogicalPlan): LogicalPlan = {
+    // 首先找到 这个要被干掉的 Project
+    // 这个要干掉的Project 要符合以下条件：
+    // 1 构成这个 Project 的 属性长度 和 孩子 LogicalPlan 的属性长度 要一致
+    // 2 这个 Project 的每一个属性 在语义上要和 孩子 LogicalPlan 的属性一一对应
     val aliasOnlyProject = plan.collectFirst {
       case p @ Project(pList, child) if isAliasOnly(pList, child.output) => p
     }
 
+    // 找到这个要被替换的 Project 之后，因为这个 Project 可能在整个 LogicalPlan 里面不是 root
+    // 所以还需要递归向下去找
     aliasOnlyProject.map { case proj =>
+      // 获取这个 Project 输出的 字段，并和 来自孩子LogicalPlan 的字段进行 map 关联
+      // 做成map
       val attributesToReplace = proj.output.zip(proj.child.output).filterNot {
         case (a1, a2) => a1 semanticEquals a2
       }
       val attrMap = AttributeMap(attributesToReplace)
       plan transform {
+        // 从root开始遍历，遇到这个 Project 就干掉
         case plan: Project if plan eq proj => plan.child
+        // 如果不是这个要干掉的 Project，则递归的检查当前LogicalPlan 中表达式里有没有来自被干掉的Project 的输出，然后用被干掉的 Project 的 孩子LogicalPlan 的输出进行替换
         case plan => plan transformExpressions {
           case a: Attribute if attrMap.contains(a) => attrMap(a)
         }
@@ -293,11 +345,17 @@ object LimitPushDown extends Rule[LogicalPlan] {
  * safe to pushdown Filters and Projections through it. Filter pushdown is handled by another
  * rule PushDownPredicate. Once we add UNION DISTINCT, we will not be able to pushdown Projections.
  */
+// Project 下推到 Union 算子
+// 在 Union 的时候，有一些字段最终是不需要的，提前select 出来，可以减少数据量
+// 然后 Union 其实只是 列对得上就可以，不要求left 和 right 的字段名称一致
 object PushProjectionThroughUnion extends Rule[LogicalPlan] with PredicateHelper {
 
   /**
    * Maps Attributes from the left side to the corresponding Attribute on the right side.
    */
+  // 用 第一个 child，就是包含了所有字段的 那个child
+  // 去生成 字段映射map，因为right select 出来的字段名可能和left 不一样，但是 字段数量一致就可以
+  // 因此这里需要做一个映射
   private def buildRewrites(left: LogicalPlan, right: LogicalPlan): AttributeMap[Attribute] = {
     assert(left.output.size == right.output.size)
     AttributeMap(left.output.zip(right.output))
@@ -336,14 +394,20 @@ object PushProjectionThroughUnion extends Rule[LogicalPlan] with PredicateHelper
   def apply(plan: LogicalPlan): LogicalPlan = plan transform {
 
     // Push down deterministic projection through UNION ALL
+    // Project -> Union
+    // 然后执行下推，Union 中每一个 child 的结构都是一样的，因此新的第一个 child 需要包含完整schema去定调
     case p @ Project(projectList, Union(children)) =>
       assert(children.nonEmpty)
       if (projectList.forall(_.deterministic)) {
+        // 第一个new child 需要包含所有的 字段，封装成一个 Project
         val newFirstChild = Project(projectList, children.head)
+        // 剩下的其他 child 就按照第一个 Project 的字段去映射
         val newOtherChildren = children.tail.map { child =>
+          // 个人理解，就是改写 原有的字段，然后在 旧的LogicalPlan 上套一个 Project
           val rewrites = buildRewrites(children.head, child)
           Project(projectList.map(pushToRight(_, rewrites)), child)
         }
+        // 再在这些 new child list 上面再套 一个 Union
         Union(newFirstChild +: newOtherChildren)
       } else {
         p
@@ -597,6 +661,7 @@ object CollapseRepartition extends Rule[LogicalPlan] {
  * Collapse Adjacent Window Expression.
  * - If the partition specs and order specs are the same, collapse into the parent.
  */
+// 如果相邻的 两个 Window LogicalPlan，他们的 order by 和 partition by 都相同，那么就可以把 window 的 expression 合并到一起，然后合并两个 Window LogicalPlan
 object CollapseWindow extends Rule[LogicalPlan] {
   def apply(plan: LogicalPlan): LogicalPlan = plan transformUp {
     case w @ Window(we1, ps1, os1, Window(we2, ps2, os2, grandChild)) if ps1 == ps2 && os1 == os2 =>
@@ -613,9 +678,15 @@ object CollapseWindow extends Rule[LogicalPlan] {
  * Note: While this optimization is applicable to all types of join, it primarily benefits Inner and
  * LeftSemi joins.
  */
+// 是将总的Filter中相对于子树约束多余的约束删除掉，只支持inter join和leftsemi join
+// 例如：select * from (select * from tb1 where a) as x, (select * from tb2 where b) as y where a, b
+// ==>
+// select * from (select * from tb1 where a) as x, (select * from tb2 where b) as y
 object InferFiltersFromConstraints extends Rule[LogicalPlan] with PredicateHelper {
   def apply(plan: LogicalPlan): LogicalPlan = plan transform {
     case filter @ Filter(condition, child) =>
+      // 用 Filter 中自带的 约束 减去 所有孩子的约束，看看还能不不能剩下东西
+      // 如果剩下就构建一个新的 Filter
       val newFilters = filter.constraints --
         (child.constraints ++ splitConjunctivePredicates(condition))
       if (newFilters.nonEmpty) {
@@ -627,11 +698,16 @@ object InferFiltersFromConstraints extends Rule[LogicalPlan] with PredicateHelpe
     case join @ Join(left, right, joinType, conditionOpt) =>
       // Only consider constraints that can be pushed down completely to either the left or the
       // right child
+      // 从 left 和 right 中找出在 left 和 right output 相关的 限制条件 list
       val constraints = join.constraints.filter { c =>
         c.references.subsetOf(left.outputSet) || c.references.subsetOf(right.outputSet)
       }
       // Remove those constraints that are already enforced by either the left or the right child
+      // 减去 在 left 和 right 已经使用了的 限制
+      // 剩下的 限制就是 只能在 Join 使用的
       val additionalConstraints = constraints -- (left.constraints ++ right.constraints)
+      // newConditionOpt 是去除了 多余的 限制条件 的 Join 的限制条件
+      // conditionOpt 是Join 中，left 和 right 进行join的匹配条件
       val newConditionOpt = conditionOpt match {
         case Some(condition) =>
           val newFilters = additionalConstraints -- splitConjunctivePredicates(condition)
@@ -639,6 +715,7 @@ object InferFiltersFromConstraints extends Rule[LogicalPlan] with PredicateHelpe
         case None =>
           additionalConstraints.reduceOption(And)
       }
+      // 用新的 匹配条件构建 Join
       if (newConditionOpt.isDefined) Join(left, right, joinType, newConditionOpt) else join
   }
 }
@@ -693,9 +770,11 @@ object CombineFilters extends Rule[LogicalPlan] with PredicateHelper {
 /**
  * Removes no-op SortOrder from Sort
  */
+// 如果 Sort LogicalPlan 中的  orders（就是 order by 后面的 若干个 expression）是空的，那么就去除这个 Sort LogicalPlan
 object EliminateSorts extends Rule[LogicalPlan] {
   def apply(plan: LogicalPlan): LogicalPlan = plan transform {
     case s @ Sort(orders, _, child) if orders.isEmpty || orders.exists(_.child.foldable) =>
+      // 留下不能直接计算的 order by 语句
       val newOrders = orders.filterNot(_.child.foldable)
       if (newOrders.isEmpty) child else s.copy(order = newOrders)
   }
@@ -767,6 +846,9 @@ object PruneFilters extends Rule[LogicalPlan] with PredicateHelper {
 //
 // filter @ Filter(condition, union: Union)原理一样还有大部分的一元操作，比如Limit，都可以尝试把Filter下移，来进行优化。
 // 实例：select * from (select * from t limit 10) where a>10
+//
+// 谓词下推，和谓词下推到 Join 不一样
+// 谓词下推，就是把 Filter 下推到 子LogicalPlan
 object PushDownPredicate extends Rule[LogicalPlan] with PredicateHelper {
   def apply(plan: LogicalPlan): LogicalPlan = plan transform {
     // SPARK-13473: We can't push the predicate down when the underlying projection output non-
@@ -774,6 +856,8 @@ object PushDownPredicate extends Rule[LogicalPlan] with PredicateHelper {
     // implies that, for a given input row, the output are determined by the expression's initial
     // state and all the input rows processed before. In another word, the order of input rows
     // matters for non-deterministic expressions, while pushing down predicates changes the order.
+    // Filter 下面是 Project
+    // Filter 的 condition 能否下推到 Project 的孩子 LogicalPlan
     case filter @ Filter(condition, project @ Project(fields, grandChild))
       if fields.forall(_.deterministic) && canPushThroughCondition(grandChild, condition) =>
 
@@ -790,6 +874,7 @@ object PushDownPredicate extends Rule[LogicalPlan] with PredicateHelper {
     // 1. All the expressions are part of window partitioning key. The expressions can be compound.
     // 2. Deterministic.
     // 3. Placed before any non-deterministic predicates.
+    // Filter 下面是 Window
     case filter @ Filter(condition, w: Window)
         if w.partitionSpec.forall(_.isInstanceOf[AttributeReference]) =>
       val partitionAttrs = AttributeSet(w.partitionSpec.flatMap(_.references))
@@ -811,6 +896,7 @@ object PushDownPredicate extends Rule[LogicalPlan] with PredicateHelper {
         filter
       }
 
+    // Filter 下面是 Aggregate
     case filter @ Filter(condition, aggregate: Aggregate) =>
       // Find all the aliased expressions in the aggregate list that don't include any actual
       // AggregateExpression, and create a map from the alias to the expression
@@ -842,10 +928,15 @@ object PushDownPredicate extends Rule[LogicalPlan] with PredicateHelper {
         filter
       }
 
+    // Filter 下面是 Union
     case filter @ Filter(condition, union: Union) =>
       // Union could change the rows, so non-deterministic predicate can't be pushed down
+      // 分解成两部分，可以下推的 和 还要保持在 Filter 里的 condition
       val (pushDown, stayUp) = splitConjunctivePredicates(condition).span(_.deterministic)
 
+      // Union 有多个孩子LogicalPlan
+      // pushDown 就是要下推的部分 condition
+      // 然后挨个 孩子LogicalPlan遍历，确认下推的部分扔到哪个孩子去
       if (pushDown.nonEmpty) {
         val pushDownCond = pushDown.reduceLeft(And)
         val output = union.output
@@ -867,14 +958,24 @@ object PushDownPredicate extends Rule[LogicalPlan] with PredicateHelper {
         filter
       }
 
+    // Filter 下面是其他 单孩子的 LogicalPlan
     case filter @ Filter(condition, u: UnaryNode)
+        // canPushThrough 判断特定类型的 LogicalPlan 能不能做下推
+        // 同时还要满足 这个 LogicalPlan 的 所有 expressions 都是 deterministic
         if canPushThrough(u) && u.expressions.forall(_.deterministic) =>
+      // pushDownPredicate 是一个内部方法，把Filter 的 condition 下推到 当前 LogicalPlan 的 孩子 LogicalPlan
+      // 意味着，这个下推向下了2层
       pushDownPredicate(filter, u.child) { predicate =>
+        // withNewChildren 就是用 Seq(Filter(predicate, u.child)) 这批 孩子LogicalPlan
+        // 替换原来 u 这个 LogicalPlan 的孩子
+        // 如果下推成功的话，就是用下推的 predicate（condition），去在原来的 孙子 LogicalPlan 上套一层 Filter
         u.withNewChildren(Seq(Filter(predicate, u.child)))
       }
   }
 
   private def canPushThrough(p: UnaryNode): Boolean = p match {
+    // 像 Project Window Aggregate Union 这些其实也可以返回 True
+    // 但是单独抽出来提前进行特殊处理了
     // Note that some operators (e.g. project, aggregate, union) are being handled separately
     // (earlier in this rule).
     case _: AppendColumns => true
@@ -889,6 +990,16 @@ object PushDownPredicate extends Rule[LogicalPlan] with PredicateHelper {
     case _ => false
   }
 
+  // 结构是这样的
+  // Filter -> 当前的 UnaryNode LogicalPlan -> 当前 UnaryNode LogicalPlan 的 孩子 LogicalPlan
+  // 就是要把 Filter 的 condition 向下推2层，
+  // 到达
+  // 当前 UnaryNode LogicalPlan 的 孩子 LogicalPlan
+  // 柯里化函数，可以认为3个参数
+  // 1 filter：Filter
+  // 2 grandchild：filter 的 孩子LogicalPlan 的 孩子LogicalPlan（也就是 filter 的孙子LogicalPlan）
+  // 3 insertFilter：一个函数，入参 Expression，输出 LogicalPlan
+  // 整个方法最终返回一个新的 LogicalPlan
   private def pushDownPredicate(
       filter: Filter,
       grandchild: LogicalPlan)(insertFilter: Expression => LogicalPlan): LogicalPlan = {
@@ -896,20 +1007,28 @@ object PushDownPredicate extends Rule[LogicalPlan] with PredicateHelper {
     // come from grandchild.
     // TODO: non-deterministic predicates could be pushed through some operators that do not change
     // the rows.
+
+    // 首先 拆分 Filter 中的 condition
     val (candidates, containingNonDeterministic) =
       splitConjunctivePredicates(filter.condition).span(_.deterministic)
 
+    // 然后看看哪些condition 可以被下推到 孙子 LogicalPlan
+    // pushDown 是可以下推的 condition
     val (pushDown, rest) = candidates.partition { cond =>
       cond.references.subsetOf(grandchild.outputSet)
     }
 
+    // 仍然保存在 Filter 中不下推的 condition
     val stayUp = rest ++ containingNonDeterministic
 
     if (pushDown.nonEmpty) {
+      // 用传进来的函数 ，传入 下推的 condition，构建被下推的 新的 孙子 LogicalPlan
       val newChild = insertFilter(pushDown.reduceLeft(And))
+      // 用不下推的 condition 构建新的 Filter
       if (stayUp.nonEmpty) {
         Filter(stayUp.reduceLeft(And), newChild)
       } else {
+      // 如果都下推了，原来的 Filter 就可以干掉了
         newChild
       }
     } else {
@@ -922,6 +1041,16 @@ object PushDownPredicate extends Rule[LogicalPlan] with PredicateHelper {
    * subqueries in the condition do not contain the same attributes as the plan they are moved
    * into. This can happen when the plan and predicate subquery have the same source.
    */
+  //  plan ：Filter 的 孙子 LogicalPlan
+  // condition ： Filter 中的 condition
+  // 判断Filter 中的 condition 能否下推到 Filter 的孙子LogicalPlan
+  // 我理解的，例如 select field1 from table1 where table1.field2 > 0
+  // 就会有这样的结构
+  // Filter -> Project -> Relation
+  // Filter 中的 condition 中 包含了 LogicalPlan（PredicateSubquery 是 SubqueryExpression 的子类，SubqueryExpression 就是包含 LogicalPlan 的 Expression）
+  // Filter 中的 condition 包含的 LogicalPlan 是一个 Relation，他的output 和 Filter 的 孙子 LogicalPlan 的 outputSet有重合
+  // 所以这个 condition 可以加入 matched
+  // 最终 matched 不为空，说明，Filter 的 condition 可以下推到这个Filter 的 孙子 LogicalPlan
   private def canPushThroughCondition(plan: LogicalPlan, condition: Expression): Boolean = {
     val attributes = plan.outputSet
     val matched = condition.find {
@@ -942,6 +1071,8 @@ object PushDownPredicate extends Rule[LogicalPlan] with PredicateHelper {
  *
  * Check https://cwiki.apache.org/confluence/display/Hive/OuterJoinBehavior for more details
  */
+// 谓词下推到 Join 算子
+// 该优化规则是将Filter中的条件下移到Join算子中
 object PushPredicateThroughJoin extends Rule[LogicalPlan] with PredicateHelper {
   /**
    * Splits join condition expressions or filter predicates (on a given join's output) into three
@@ -951,32 +1082,67 @@ object PushPredicateThroughJoin extends Rule[LogicalPlan] with PredicateHelper {
    *
    * @return (canEvaluateInLeft, canEvaluateInRight, haveToEvaluateInBoth)
    */
+  // 所以 split 方法的三个参数分别是：
+  // 如果是 Filter 包住 Join
+  // 1 Seq[Expression], Filter LogicalPlan 的 condition 按照 AND 切分后形成的 List
+  // 2 left LogicalPlan
+  // 3 right LogicalPlan
+  // 如果是 Join 自己
+  // 1 Join 的 condition 按照 AND 拆分形成的list
+  // 2 left LogicalPlan
+  // 3 right LogicalPlan
   private def split(condition: Seq[Expression], left: LogicalPlan, right: LogicalPlan) = {
     // Note: In order to ensure correctness, it's important to not change the relative ordering of
     // any deterministic expression that follows a non-deterministic expression. To achieve this,
     // we only consider pushing down those expressions that precede the first non-deterministic
     // expression in the condition.
+    //
+    // list 的 span 方法根据输入的bool表达式，将list进行分割。返回一个list集合。但是碰到第一个不满足的元素，即返回。如：
+    // 例如 val a = List[1,1,2,3,4]
+    // a.span(_ == 1) 则返回 [1, 1] 和 [2,3,4]
+    // 这里其实要保证前半截是 deterministic = true的
+    // 这里分成了两个部分：pushDownCandidates 和 containingNonDeterministic
+    // deterministic = true 的 list，就是 pushDownCandidates，就会成为下推的候选集
     val (pushDownCandidates, containingNonDeterministic) = condition.span(_.deterministic)
+    // 这里有个 partition 函数，符合 partition 函数的条件的list 和 不符合条件的list 组成一个二元组
+    // 把下推的候选集 和 left LogicalPlan 的 output 比较，如果和 output 匹配，这个 下推候选条件 就可以下推到 left
     val (leftEvaluateCondition, rest) =
       pushDownCandidates.partition(_.references.subsetOf(left.outputSet))
+    // 从剩下的 候选集中 匹配可以下推到 right 的
     val (rightEvaluateCondition, commonCondition) =
         rest.partition(expr => expr.references.subsetOf(right.outputSet))
-
+    // 分成了 3部分，可以下推到 left 的，可以下推到right 的，没办法下推的
     (leftEvaluateCondition, rightEvaluateCondition, commonCondition ++ containingNonDeterministic)
   }
 
   def apply(plan: LogicalPlan): LogicalPlan = plan transform {
     // push the where condition down into join filter
+    // 第 1 种情况，Filter LogicalPlan 下面就是 Join LogicalPlan
+    // 把 where 条件 下推到 join 的 filter
     case f @ Filter(filterCondition, Join(left, right, joinType, joinCondition)) =>
       val (leftFilterConditions, rightFilterConditions, commonFilterCondition) =
+        // splitConjunctivePredicates 方法传入一个 Expression，如果这个 Expression 是用 And 连接的，拆成两份，继续递归下去
+        // 最终得到 一个 Seq[Expression],其实就是把 AND 连接的条件拆开
+        // 所以 split 方法的三个参数分别是：
+        // 1 Seq[Expression],Filter LogicalPlan 的 condition 按照 AND 切分后形成的 List
+        // 2 left LogicalPlan
+        // 3 right LogicalPlan
+        // 分成了 3部分，可以下推到 left 的，可以下推到right 的，没办法下推的
         split(splitConjunctivePredicates(filterCondition), left, right)
+
+      // 然后去匹配 join 的类型
       joinType match {
         case _: InnerLike =>
           // push down the single side `where` condition into respective sides
+          // 把 下推到 left 的 条件用 AND 连起来，然后在 left 上套个 FILTER LogicalPlan，就是一个新的 left
           val newLeft = leftFilterConditions.
             reduceLeftOption(And).map(Filter(_, left)).getOrElse(left)
+          // 同理，右边也是这样
           val newRight = rightFilterConditions.
             reduceLeftOption(And).map(Filter(_, right)).getOrElse(right)
+          // 然后用新的 Join 合并 left 和 right
+          // condition 也是新的
+          // 再套个新的 Filter，过滤的 condition 也是新的
           val (newJoinConditions, others) =
             commonFilterCondition.partition(e => !SubqueryExpression.hasCorrelatedSubquery(e))
           val newJoinCond = (newJoinConditions ++ joinCondition).reduceLeftOption(And)
@@ -987,6 +1153,7 @@ object PushPredicateThroughJoin extends Rule[LogicalPlan] with PredicateHelper {
           } else {
             join
           }
+        //   RightOuter 或者 LeftOuter，只下推到 一边
         case RightOuter =>
           // push down the right side only `where` condition
           val newLeft = left
@@ -1007,16 +1174,23 @@ object PushPredicateThroughJoin extends Rule[LogicalPlan] with PredicateHelper {
 
           (rightFilterConditions ++ commonFilterCondition).
             reduceLeftOption(And).map(Filter(_, newJoin)).getOrElse(newJoin)
+        // FullOuter 啥都不干
         case FullOuter => f // DO Nothing for Full Outer Join
         case NaturalJoin(_) => sys.error("Untransformed NaturalJoin node")
         case UsingJoin(_, _) => sys.error("Untransformed Using join node")
       }
 
     // push down the join filter into sub query scanning if applicable
+    // 第 2 种情况，直接就是一个 Join LogicalPlan
     case j @ Join(left, right, joinType, joinCondition) =>
       val (leftJoinConditions, rightJoinConditions, commonJoinCondition) =
+        // 这里同样给 split 这个内部方法传3个参数
+        // 1 Join 的 condition 按照 AND 拆分形成的list
+        // 2 left LogicalPlan
+        // 3 right LogicalPlan
         split(joinCondition.map(splitConjunctivePredicates).getOrElse(Nil), left, right)
 
+      // 和上面的差不多
       joinType match {
         case _: InnerLike | LeftSemi =>
           // push down the single side only join filter for both sides sub queries
@@ -1082,12 +1256,15 @@ object CombineLimits extends Rule[LogicalPlan] {
  * the join between R and S is not a cartesian product and therefore should be allowed.
  * The predicate R.r = S.s is not recognized as a join condition until the ReorderJoin rule.
  */
+// 检查 LogicalPlan tree 中是否包含 笛卡尔积 类型的 Join 操作。如果存在这样的操作，但是在sql语句中又没有显示的使用 cross join，那么就会抛出异常
+// 所以这个优化必须在 RecordJoin 规则执行之后才能执行
 case class CheckCartesianProducts(conf: CatalystConf)
     extends Rule[LogicalPlan] with PredicateHelper {
   /**
    * Check if a join is a cartesian product. Returns true if
    * there are no join conditions involving references from both left and right.
    */
+  // 遍历看表达式中是否包含 cross join 的信息
   def isCartesianProduct(join: Join): Boolean = {
     val conditions = join.condition.map(splitConjunctivePredicates).getOrElse(Nil)
     !conditions.map(_.references).exists(refs => refs.exists(join.left.outputSet.contains)
@@ -1117,6 +1294,9 @@ case class CheckCartesianProducts(conf: CatalystConf)
  * This uses the same rules for increasing the precision and scale of the output as
  * [[org.apache.spark.sql.catalyst.analysis.DecimalPrecision]].
  */
+// 用于处理聚合操作中 和 Decimal 类型相关的问题。在聚合查询中，如果涉及浮点数的精度处理，性能有影响。固定精度的 Decimal 类型，可以加速聚合操作的速度
+
+// 看起来就是用固定精度 去进行聚合操作
 object DecimalAggregates extends Rule[LogicalPlan] {
   import Decimal.MAX_LONG_DIGITS
 

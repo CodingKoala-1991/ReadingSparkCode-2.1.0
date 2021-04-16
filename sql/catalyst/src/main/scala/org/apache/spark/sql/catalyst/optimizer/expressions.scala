@@ -459,6 +459,8 @@ object NullPropagation extends Rule[LogicalPlan] {
  *   ==>  SELECT 1.0 x, 'abc' y, Now() z ORDER BY 1.0, 'abc', Now()
  * }}}
  */
+// 例如上面样例，x y z 3 这些别名，其实背后都对应了 一个可以直接执行 （foldable） 的 Expression
+// 那么这个优化策略就是要把这些 别名替换掉，变成可以直接运行的值
 object FoldablePropagation extends Rule[LogicalPlan] {
   def apply(plan: LogicalPlan): LogicalPlan = {
     val foldableMap = AttributeMap(plan.flatMap {
@@ -475,6 +477,9 @@ object FoldablePropagation extends Rule[LogicalPlan] {
       plan
     } else {
       var stop = false
+      // 还要再调用 CleanupAliases 这个 rule
+      // 传入的参数就是一个 LogicalPlan
+      // 其实就是说 整个 LogicalPlan 替换掉这些别名之后得到一个新的 LogicalPlan，再传入这个 LogicalPlan，再把无效的别名去掉
       CleanupAliases(plan.transformUp {
         // A leaf node should not stop the folding process (note that we are traversing up the
         // tree, starting at the leaf nodes); so we are allowing it.
@@ -482,6 +487,7 @@ object FoldablePropagation extends Rule[LogicalPlan] {
           l
 
         // We can only propagate foldables for a subset of unary nodes.
+        // 不光替换 LogicalPlan，还要重写 LogicalPlan 对应的 Expression
         case u: UnaryNode if !stop && canPropagateFoldables(u) =>
           u.transformExpressions(replaceFoldable)
 

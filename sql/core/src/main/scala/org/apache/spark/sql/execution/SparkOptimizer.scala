@@ -33,6 +33,6 @@ class SparkOptimizer(
   override def batches: Seq[Batch] = super.batches :+
     Batch("Optimize Metadata Only Query", Once, OptimizeMetadataOnlyQuery(catalog, conf)) :+
     Batch("Extract Python UDF from Aggregate", Once, ExtractPythonUDFFromAggregate) :+
-    Batch("Prune File Source Table Partitions", Once, PruneFileSourcePartitions) :+
-    Batch("User Provided Optimizers", fixedPoint, experimentalMethods.extraOptimizations: _*)
+    Batch("Prune File Source Table Partitions", Once, PruneFileSourcePartitions) :+  // 对数据文件中分区进行剪裁，尽可能不要读入无关分区
+    Batch("User Provided Optimizers", fixedPoint, experimentalMethods.extraOptimizations: _*)  // 用户提供的 Optimizers
 }

@@ -45,6 +45,7 @@ trait Predicate extends Expression {
 
 
 trait PredicateHelper {
+  // 传入一个 Expression，如果这个 Expression 是用 And 连接的，拆成两份，继续递归下去
   protected def splitConjunctivePredicates(condition: Expression): Seq[Expression] = {
     condition match {
       case And(cond1, cond2) =>

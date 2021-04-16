@@ -227,6 +227,7 @@ abstract class TreeNode[BaseType <: TreeNode[BaseType]] extends Product {
    * Returns a copy of this node with the children replaced.
    * TODO: Validate somewhere (in debug mode?) that children are ordered correctly.
    */
+  // 其实就是用   newChildren 更新当前节点，并返回当前节点
   def withNewChildren(newChildren: Seq[BaseType]): BaseType = {
     assert(newChildren.size == children.size, "Incorrect number of children")
     var changed = false

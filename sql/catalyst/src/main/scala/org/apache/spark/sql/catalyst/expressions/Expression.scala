@@ -67,6 +67,8 @@ abstract class Expression extends TreeNode[Expression] {
   // 是否可以折叠，也就是说能否直接计算，如果是 true 就可以直接计算，两种情况可以直接计算
   // 1 表达式是  Literal 这种 Expression
   // 2 所有子表达式的 foldable 都是 true
+  // Literal CurrentDate CurrentDatabase CurrentTimestamp LeafMathExpression（包括EulerNumber 和 Pi）这些
+  // foldable = true，因为是可以直接提取值，可以叫做可以直接计算
   def foldable: Boolean = false
 
   /**
@@ -83,7 +85,17 @@ abstract class Expression extends TreeNode[Expression] {
    */
   // 执行 eval方法 返回的结果，是否是确定性的，由这个 Expression 的所有孩子的 确定性deterministic 来决定
   // 对于相同的输入是否一直返回相同的输出。
-  // 对于分布式环境来说，很多都是不稳定的
+  // 对于分布式环境来说，很多都是不稳定的，哪怕像 first 或者 last 这种，都是不稳定的
+  //
+  // TypedAggregateExpression 这个 Expression 的 deterministic 是 true
+  // 其实 deterministic 等于 false 的并不多
+  // 个人理解 TypedAggregateExpression 是用于 DF 的转换的
+  // 例如 val ds.groupByKey(_._1).agg(typed.sum(_._2))
+  // agg 这个算子里面的 expression 就是 TypedAggregateExpression
+  //
+  // leaf 类型的 Expression 的 deterministic = true
+  // 因为 Nil.forall(_.deterministic) 总是true
+  // 因为 leaf 类型的 Expression 没有孩子，children 是 Nil
   def deterministic: Boolean = children.forall(_.deterministic)
 
   // 是否有可能输出空值

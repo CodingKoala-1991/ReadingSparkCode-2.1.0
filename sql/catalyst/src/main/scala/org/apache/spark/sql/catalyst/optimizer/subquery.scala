@@ -40,6 +40,7 @@ import org.apache.spark.sql.types._
  *    be pulled out as join conditions, value = selected column will also be used as join
  *    condition.
  */
+// 将EXISTS/NOT EXISTS改为left semi/anti join形式，将IN/NOT IN也改为left semi/anti join形式
 object RewritePredicateSubquery extends Rule[LogicalPlan] with PredicateHelper {
   def apply(plan: LogicalPlan): LogicalPlan = plan transform {
     case Filter(condition, child) =>
@@ -104,6 +105,23 @@ object RewritePredicateSubquery extends Rule[LogicalPlan] with PredicateHelper {
 /**
  * This rule rewrites correlated [[ScalarSubquery]] expressions into LEFT OUTER joins.
  */
+// ScalarSubquery指的是只返回一个元素（一行一列）的 Expression
+// 如果Filter，Project，Aggregate操作中包含相应的ScalarSubquery，就重写之，
+// 思想就是因为ScalarSubquery结果很小，可以过滤大部分无用元素，所以优先使用left OUTER join过滤：
+// Aggregate操作，max(a) 就是一个 返回单行单列结果 的 Expression
+// 例如select max(a), b from tb1 group by max(a)
+// ==>
+// select max(a), b from tb1 left OUTER join max(a) group by max(a)，这样先做join，效率要比先做group by操作效率高
+//
+// Project操作，
+// 例如select max(a), b from tb1
+// ==>
+// select max(a), b from tb1 left OUTER join max(a)
+//
+// Filter，
+// 例如select b from tb1 where max(a)
+// ==>
+// select b (select * from tb1 left OUTER join max(a) where max(a))
 object RewriteCorrelatedScalarSubquery extends Rule[LogicalPlan] {
   /**
    * Extract all correlated scalar subqueries from an expression. The subqueries are collected using

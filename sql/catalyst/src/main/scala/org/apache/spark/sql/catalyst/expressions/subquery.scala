@@ -61,6 +61,7 @@ object SubqueryExpression {
  *
  * Note: `exprId` is used to have a unique name in explain string output.
  */
+// ScalarSubquery 是这样一种 Expression，只返回一行和一列
 case class ScalarSubquery(
     plan: LogicalPlan,
     children: Seq[Expression] = Seq.empty,
