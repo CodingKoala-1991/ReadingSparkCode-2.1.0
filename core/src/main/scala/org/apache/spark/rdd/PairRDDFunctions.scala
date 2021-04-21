@@ -72,6 +72,13 @@ class PairRDDFunctions[K, V](self: RDD[(K, V)])
    * @note V and C can be different -- for example, one might group an RDD of type
    * (Int, Int) into an RDD of type (Int, Seq[Int]).
    */
+  // 很多地方会使用
+  // 例如 val RDD1 = RDD2.reduceByKey(_ + _)
+  // 最终会调用 这里
+  //  partitioner 就是上一个 RDD2 对应的 partitioner
+  // mergeCombiners 就是 RDD2 里传进来的 聚合函数
+  // 举个例子，RDD2 是 PairRDD
+  // 然后经过这个方法，RDD1 就是 ShuffledRDD，构造RDD1的时候需要参数：self 和 partitioner，就是 RDD2本身 和 RDD2的 partitioner
   @Experimental
   def combineByKeyWithClassTag[C](
       createCombiner: V => C,
@@ -308,7 +315,11 @@ class PairRDDFunctions[K, V](self: RDD[(K, V)])
    * also perform the merging locally on each mapper before sending results to a reducer, similarly
    * to a "combiner" in MapReduce.
    */
+  // 下面两个  reduceByKey 对外，实际真正调用的是这个 reduceByKey
+  // 这里接受两个参数，分别是分类器 和 函数
   def reduceByKey(partitioner: Partitioner, func: (V, V) => V): RDD[(K, V)] = self.withScope {
+    // 例如 val RDD1 = RDD2.reduceByKey((_ + _))
+    // reduceByKey
     combineByKeyWithClassTag[V]((v: V) => v, func, func, partitioner)
   }
 
@@ -317,6 +328,8 @@ class PairRDDFunctions[K, V](self: RDD[(K, V)])
    * also perform the merging locally on each mapper before sending results to a reducer, similarly
    * to a "combiner" in MapReduce. Output will be hash-partitioned with numPartitions partitions.
    */
+  // 这个 reduceByKey 才是提供对外访问的 算子
+  // 通过算子 构造 RDD 之间串联的链条
   def reduceByKey(func: (V, V) => V, numPartitions: Int): RDD[(K, V)] = self.withScope {
     reduceByKey(new HashPartitioner(numPartitions), func)
   }
@@ -327,6 +340,8 @@ class PairRDDFunctions[K, V](self: RDD[(K, V)])
    * to a "combiner" in MapReduce. Output will be hash-partitioned with the existing partitioner/
    * parallelism level.
    */
+  // 这个 reduceByKey 也是提供对外访问的 算子
+  // 传入一个函数，入参是两个参数，出参是一个，入参和出参的类型要一致
   def reduceByKey(func: (V, V) => V): RDD[(K, V)] = self.withScope {
     reduceByKey(defaultPartitioner(self), func)
   }

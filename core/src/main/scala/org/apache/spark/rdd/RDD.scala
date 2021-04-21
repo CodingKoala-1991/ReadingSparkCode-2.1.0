@@ -173,9 +173,12 @@ abstract class RDD[T: ClassTag](
     // with the SparkContext for cleanups and accounting. Do this only once.
     if (storageLevel == StorageLevel.NONE) {
       sc.cleaner.foreach(_.registerRDDForCleanup(this))
+      // 其实就是在 sc 中的 persistentRdds 这个 Map 中登记一下，这个 RDD 要被 persist
+      // 真正的 persist 是被 action 触发了之后才执行的
       sc.persistRDD(this)
     }
     storageLevel = newLevel
+    // persist 之后还是返回这个 RDD，但是额外操作就是把 这个 RDD 进行了 persist
     this
   }
 
@@ -191,6 +194,16 @@ abstract class RDD[T: ClassTag](
       // one that is explicitly requested by the user (after adapting it to use disk).
       persist(LocalRDDCheckpointData.transformStorageLevel(newLevel), allowOverride = true)
     } else {
+      // newLevel 的 class 定义
+      // class StorageLevel private(
+      //    private var _useDisk: Boolean,
+      //    private var _useMemory: Boolean,
+      //    private var _useOffHeap: Boolean,
+      //    private var _deserialized: Boolean,
+      //    private var _replication: Int = 1)
+      //
+      // 分别表示 是否使用Disk  是否使用 Memory  是否堆外内存  是否堆内存
+      // 最后一个是 备份数量
       persist(newLevel, allowOverride = false)
     }
   }
@@ -1154,6 +1167,12 @@ abstract class RDD[T: ClassTag](
   /**
    * Return the number of elements in the RDD.
    */
+  // RDD 通过 transformation 操作 把 RDD 的 逻辑关系串联起来，生成RDD 的 DAG
+  // 最终通过 action 触发操作
+  // 在 action 之前，这一大组RDD 之间的关联关系已经建立起来
+  // 最后的一个 RDD 的 也持有最早的 SparkContext
+  // 这个时候开始触发计算，实际上是SparkContext 中的 runJob 方法
+  // 这里 runJob你最终返回的是一个 Array，所以最后的结果要 sum 一下
   def count(): Long = sc.runJob(this, Utils.getIteratorSize _).sum
 
   /**

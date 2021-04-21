@@ -113,12 +113,14 @@ class CoarseGrainedSchedulerBackend(scheduler: TaskSchedulerImpl, val rpcEnv: Rp
       val reviveIntervalMs = conf.getTimeAsMs("spark.scheduler.revive.interval", "1s")
 
       reviveThread.scheduleAtFixedRate(new Runnable {
+        // 定时发送 ReviveOffers 信号，用来触发 调度池的 调度
         override def run(): Unit = Utils.tryLogNonFatalError {
           Option(self).foreach(_.send(ReviveOffers))
         }
       }, 0, reviveIntervalMs, TimeUnit.MILLISECONDS)
     }
 
+    // 运行过程中会接收到各种信号
     override def receive: PartialFunction[Any, Unit] = {
       case StatusUpdate(executorId, taskId, state, data) =>
         scheduler.statusUpdate(taskId, state, data.value)
@@ -134,6 +136,7 @@ class CoarseGrainedSchedulerBackend(scheduler: TaskSchedulerImpl, val rpcEnv: Rp
           }
         }
 
+      // ReviveOffers 信号是用来触发一次调度的
       case ReviveOffers =>
         makeOffers()
 
@@ -213,12 +216,15 @@ class CoarseGrainedSchedulerBackend(scheduler: TaskSchedulerImpl, val rpcEnv: Rp
     }
 
     // Make fake resource offers on all executors
+    // activeExecutors 应该是记录了当前 所有持有的 executors
     private def makeOffers() {
       // Filter out executors under killing
       val activeExecutors = executorDataMap.filterKeys(executorIsAlive)
       val workOffers = activeExecutors.map { case (id, executorData) =>
         new WorkerOffer(id, executorData.executorHost, executorData.freeCores)
       }.toIndexedSeq
+      // scheduler.resourceOffers(workOffers) 把新的调度的 task 分配到 各个 active 的 executor 上
+      // launchTasks 的工作，就是根据这批 被分配的 task 封装的 executor 信息，利用 endpoint，把task 发送到各个 executor 上去
       launchTasks(scheduler.resourceOffers(workOffers))
     }
 
@@ -248,6 +254,9 @@ class CoarseGrainedSchedulerBackend(scheduler: TaskSchedulerImpl, val rpcEnv: Rp
 
     // Launch tasks returned by a set of resource offers
     private def launchTasks(tasks: Seq[Seq[TaskDescription]]) {
+      // 传入的一组 tasks，每一个 task 事先被分配到 哪一个 executor 已经确定好了
+      // 把task 序列化
+      // 然后最后 通过 endpoint 发送一个 LaunchTask 消息
       for (task <- tasks.flatten) {
         val serializedTask = ser.serialize(task)
         if (serializedTask.limit >= maxRpcMessageSize) {
@@ -403,6 +412,8 @@ class CoarseGrainedSchedulerBackend(scheduler: TaskSchedulerImpl, val rpcEnv: Rp
   }
 
   override def reviveOffers() {
+    // driver 的 RPC 发送一个 ReviveOffers 信号
+    // 然后会接收这样的一个 ReviveOffers 信号继续后续处理
     driverEndpoint.send(ReviveOffers)
   }
 

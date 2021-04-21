@@ -1628,6 +1628,7 @@ class SparkContext(config: SparkConf) extends Logging {
     getRDDStorageInfo(_ => true)
   }
 
+
   private[spark] def getRDDStorageInfo(filter: RDD[_] => Boolean): Array[RDDInfo] = {
     assertNotStopped()
     val rddInfos = persistentRdds.values.filter(filter).map(RDDInfo.fromRdd).toArray
@@ -1901,6 +1902,7 @@ class SparkContext(config: SparkConf) extends Logging {
    * Run a function on a given set of partitions in an RDD and pass the results to the given
    * handler function. This is the main entry point for all actions in Spark.
    */
+  // 这个才是最终的 runJob 方法
   def runJob[T, U: ClassTag](
       rdd: RDD[T],
       func: (TaskContext, Iterator[T]) => U,
@@ -1915,6 +1917,9 @@ class SparkContext(config: SparkConf) extends Logging {
     if (conf.getBoolean("spark.logLineage", false)) {
       logInfo("RDD's recursive dependencies:\n" + rdd.toDebugString)
     }
+    // 然后把这个 要进行 action操作的rdd 和 对应的action操作函数 扔给 dagScheduler
+    // 这个 rdd 包含了 整个 RDD 链条之间的所有关系
+    // dagScheduler 根据这个 rdd 持有的信息，就可以做 Stage 划分了
     dagScheduler.runJob(rdd, cleanedFunc, partitions, callSite, resultHandler, localProperties.get)
     progressBar.foreach(_.finishAll())
     rdd.doCheckpoint()
@@ -1923,11 +1928,16 @@ class SparkContext(config: SparkConf) extends Logging {
   /**
    * Run a function on a given set of partitions in an RDD and return the results as an array.
    */
+  // 还是用 count() 算子举例
+  // 参数rdd ：要执行 action 的 rdd
+  // 参数 func： 把 SparkContext 和 之前的函数 封装一起
+  // 参数 partitions：分区list
   def runJob[T, U: ClassTag](
       rdd: RDD[T],
       func: (TaskContext, Iterator[T]) => U,
       partitions: Seq[Int]): Array[U] = {
     val results = new Array[U](partitions.size)
+    // 继续向上调用 runJob
     runJob[T, U](rdd, func, partitions, (index, res) => results(index) = res)
     results
   }
@@ -1936,11 +1946,24 @@ class SparkContext(config: SparkConf) extends Logging {
    * Run a job on a given set of partitions of an RDD, but take a function of type
    * `Iterator[T] => U` instead of `(TaskContext, Iterator[T]) => U`.
    */
+  // 还是用 count() 算子举例
+  //  // 参数rdd ：要执行 action 的 rdd
+  //  // 参数func：如果是 count() 算子，传入函数如下，计算 一个 Iterator 中元素的个数
+  //  // def getIteratorSize[T](iterator: Iterator[T]): Long = {
+  //  //    var count = 0L
+  //  //    while (iterator.hasNext) {
+  //  //      count += 1L
+  //  //      iterator.next()
+  //  //    }
+  //  //    count
+  //  //  }
+  // 参数 partitions：分区list
   def runJob[T, U: ClassTag](
       rdd: RDD[T],
       func: Iterator[T] => U,
       partitions: Seq[Int]): Array[U] = {
     val cleanedFunc = clean(func)
+    // 继续封装调用 上面的 runJob
     runJob(rdd, (ctx: TaskContext, it: Iterator[T]) => cleanedFunc(it), partitions)
   }
 
@@ -1954,7 +1977,18 @@ class SparkContext(config: SparkConf) extends Logging {
   /**
    * Run a job on all partitions in an RDD and return the results in an array.
    */
+  // 参数rdd ：要执行 action 的 rdd
+  // 参数func：如果是 count() 算子，传入函数如下，计算 一个 Iterator 中元素的个数
+  // def getIteratorSize[T](iterator: Iterator[T]): Long = {
+  //    var count = 0L
+  //    while (iterator.hasNext) {
+  //      count += 1L
+  //      iterator.next()
+  //    }
+  //    count
+  //  }
   def runJob[T, U: ClassTag](rdd: RDD[T], func: Iterator[T] => U): Array[U] = {
+    // 调用上面的上面的这个 runJob
     runJob(rdd, func, 0 until rdd.partitions.length)
   }
 

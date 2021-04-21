@@ -40,6 +40,25 @@ private[spark] class ShuffledRDDPartition(val idx: Int) extends Partition {
  * @tparam V the value class.
  * @tparam C the combiner class.
  */
+// 例如 val RDD1 = RDD2.reduceByKey(_ + _)
+// 借助 RDD2 构建 RDD1
+// 然后经过这个方法，RDD1 就是 ShuffledRDD，构造RDD1的时候需要参数：self 和 partitioner，就是 RDD2本身 和 RDD2的 partitioner
+// 初始化 RDD1 的过程中 还要初始化RDD 基类，代码：extends RDD[(K, C)](prev.context, Nil)
+//
+// abstract class RDD[T: ClassTag](
+//    @transient private var _sc: SparkContext,
+//    @transient private var deps: Seq[Dependency[_]]
+//  )
+//
+// RDD基类初始化需要 2个参数，SparkContext 和 deps
+//
+// 传入的是 RDD2的 SparkContext
+// deps 是 空
+//
+// 但其实，确定了上游 RDD 之后，deps 就可以构造了
+// getDependencies 这个方法重载 RDD 中的 getDependencies方法
+// 就是利用 父 RDD 构造 deps，这里 deps 这个 list 的长度是 1，只依赖一个RDD，所以只有一个 Dependency
+// List(new ShuffleDependency(prev, part, serializer, keyOrdering, aggregator, mapSideCombine))
 // TODO: Make this return RDD[Product2[K, C]] or have some way to configure mutable pairs
 @DeveloperApi
 class ShuffledRDD[K: ClassTag, V: ClassTag, C: ClassTag](

@@ -97,9 +97,14 @@ private[spark] class Pool(
   }
 
   override def getSortedTaskSetQueue: ArrayBuffer[TaskSetManager] = {
+    // 对所有加入 Pool 中的 taskSet 进行排序
+    // 这个排序是递归的，一层一层往下，每一层Pool 都有 一个 queue
     var sortedTaskSetQueue = new ArrayBuffer[TaskSetManager]
     val sortedSchedulableQueue =
       schedulableQueue.asScala.toSeq.sortWith(taskSetSchedulingAlgorithm.comparator)
+    // schedulable 可以是一个 Pool，也可以是一个 TaskSetManager
+    // 这个关于 Spark Pool 的调度写的挺好
+    // https://blog.coderap.com/article/310
     for (schedulable <- sortedSchedulableQueue) {
       sortedTaskSetQueue ++= schedulable.getSortedTaskSetQueue
     }
